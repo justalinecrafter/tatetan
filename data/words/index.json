@@ -1,0 +1,9 @@
+{
+  "en": {
+    "words": "en-words.jsonl",
+    "phrases": "en-phrases.jsonl"
+  },
+  "kb": {
+    "words": "kb-words.jsonl"
+  }
+}

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>縦単 - 縦型単語フィード</title>
+<meta name="description" content="スワイプしているだけで単語を覚えてしまう、半分真面目で半分ふざけた縦型単語フィード。">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0f0f0f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="縦単">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div id="app" class="app">
+  <header id="masthead" class="masthead"></header>
+  <aside id="guide" class="guide"></aside>
+  <main class="main">
+    <section id="feedView" class="feed-view">
+      <div id="feed" class="feed"></div>
+      <div id="navBtns" class="nav-btns"></div>
+    </section>
+    <section id="page" class="page" hidden></section>
+  </main>
+  <nav id="tabbar" class="tabbar"></nav>
+</div>
+<div id="sheetRoot"></div>
+<div id="snack" class="snack" role="status"></div>
+<div id="onboard" class="onboard" hidden></div>
+<div id="splash" class="splash"><img src="icons/icon.svg" alt="" width="72" height="72"></div>
+<noscript>縦単の利用には JavaScript が必要です。</noscript>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
