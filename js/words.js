@@ -1,7 +1,7 @@
 // 単語データの読み込み。データ形式は README.md を参照。
 //
-// 単語リストは「並び順 = 大まかな難易度順」。読み込み時に各単語へ位置 d (0〜1) を付ける。
-// 熟語リストは並び順を問わない。位置は持たず、含まれる語の位置から「弱い難易度」だけを作る。
+// 単語リスト・熟語リストとも「並び順 = 大まかな難易度順」。読み込み時に各語へリスト上の位置 d (0〜1) を付ける。
+// 単語と熟語は別々の道として扱う(位置はそれぞれのリストの中で数える)。
 
 export const LANG_NAME = { en: '英単語', kb: '古典単語' };
 export const KIND_NAME = { word: '単語', phrase: '熟語' };
@@ -23,22 +23,12 @@ export function parseJsonl(text, lang, kind = 'word') {
   return out;
 }
 
-// 熟語の語と単語リストの語を照合するための素朴な語幹
-function stem(t) {
-  if (t.length > 4 && t.endsWith('ies')) return t.slice(0, -3) + 'y';
-  if (t.length > 5 && t.endsWith('ing')) return t.slice(0, -3);
-  if (t.length > 4 && t.endsWith('ed')) return t.slice(0, -2);
-  if (t.length > 3 && t.endsWith('es')) return t.slice(0, -2);
-  if (t.length > 3 && t.endsWith('s')) return t.slice(0, -1);
-  return t;
-}
-
 const tokens = (s) => s.toLowerCase().replace(/[～~（）()[\]、。,.!?'"]/g, ' ').split(/\s+/).filter(Boolean);
 
 export function buildIndex(words) {
   const byId = new Map();
   const ordered = {}; // lang -> 単語(位置の順)
-  const phrases = {}; // lang -> 熟語
+  const phrases = {}; // lang -> 熟語(位置の順)
   for (const w of words) {
     byId.set(w.id, w);
     if (w.kind === 'word') (ordered[w.lang] ||= []).push(w);
@@ -49,15 +39,12 @@ export function buildIndex(words) {
   const confusables = new Map();
   for (const [lang, list] of Object.entries(ordered)) {
     const n = list.length;
-    const lookup = new Map();
     const keys = new Map();
     const byIpa = new Map();
     list.forEach((w, i) => {
       w.ord = i;
       w.d = (i + 0.5) / n;
       const lw = w.w.toLowerCase();
-      if (!lookup.has(lw)) lookup.set(lw, w);
-      if (!lookup.has(stem(lw))) lookup.set(stem(lw), w);
       if (lw.length >= 4) {
         const variants = new Set([lw]);
         for (let k = 0; k < lw.length; k++) variants.add(lw.slice(0, k) + lw.slice(k + 1));
@@ -83,20 +70,16 @@ export function buildIndex(words) {
     };
     for (const g of keys.values()) link(g);
     for (const g of byIpa.values()) link(g);
-
-    // 熟語の弱い難易度: 含まれる語のうち、単語リストで最も後ろにある語の位置
-    for (const p of phrases[lang] || []) {
-      let hard = 0;
-      for (const t of tokens(p.w)) {
-        const hit = lookup.get(t) || lookup.get(stem(t));
-        if (hit && hit.d > hard) hard = hit.d;
-      }
-      p.hard = hard;
-      p.head = p.pos === '句動詞' ? tokens(p.w)[0] : null;
-    }
   }
-  for (const [lang, list] of Object.entries(phrases)) {
-    if (!ordered[lang]) for (const p of list) { p.hard = 0; p.head = null; }
+
+  // 熟語の位置 d と、句動詞の先頭の動詞(同じ動詞の句動詞を学習枠に詰め込まないため)
+  for (const list of Object.values(phrases)) {
+    const n = list.length;
+    list.forEach((p, i) => {
+      p.ord = i;
+      p.d = (i + 0.5) / n;
+      p.head = p.pos === '句動詞' ? tokens(p.w)[0] : null;
+    });
   }
 
   return {

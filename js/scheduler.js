@@ -1,9 +1,9 @@
 // 次に流す単語を選ぶ。DOM に依存しない。
 //
-// 前線方式: 単語リストを易しい順の1本の道とみなし、新しい語は「知っているか怪しくなり始めるところ」から
+// 前線方式: 単語リスト・熟語リストをそれぞれ易しい順の1本の道とみなし、新しい語は「知っているか怪しくなり始めるところ」から
 // 易しい順に出す。覚えかけの語は学習枠(既定8語)に入れ、枠が空くまで次の新しい語は出さない。
-// その合間に、長期の復習・易しい語の確認・背伸びの語・暗記済みの抜き打ちを混ぜる。
-import { ST, DAY, BOX_GAPS, retrievability, isDue, overdue, pKnown } from './srs.js';
+// その合間に、長期の復習・易しい語の確認・背伸びの語・定着した語の抜き打ちを混ぜる。
+import { ST, DAY, BOX_GAPS, retrievability, isDue, overdue, pKnown, settled } from './srs.js';
 
 const RECENT_LIMIT = 6; // 同じ語を続けない
 const SESSION_CAP = 4; // 1 回の利用で同じ語を流す上限
@@ -122,7 +122,7 @@ function collect(ctx, lang) {
       if (rec.stretch) g.stretchInBox++;
       if (w.head) g.heads.set(w.head, (g.heads.get(w.head) || 0) + 1);
     }
-    if (!hidden[w.id] && rec && !unseen && rec.box == null && rec.st !== ST.MASTERED && rec.st !== ST.WATCH && rec.due != null && rec.due < now + DAY) g.upcoming++;
+    if (!hidden[w.id] && rec && !unseen && rec.box == null && !settled(rec) && rec.st !== ST.WATCH && rec.due != null && rec.due < now + DAY) g.upcoming++;
     if (!hidden[w.id]) {
       if (w.kind === 'phrase') {
         g.totalPhrases++;
@@ -144,16 +144,17 @@ function collect(ctx, lang) {
       if (card >= rec.dueCard || (rec.due != null && now >= rec.due)) g.boxDue.push(w);
       return;
     }
-    if (rec.st === ST.MASTERED) {
+    if (settled(rec)) {
       if (now - rec.last >= CHECK_MIN_GAP) g.check.push(w);
       return;
     }
     if (rec.park) {
-      if (now >= rec.due || (ctx.frontierOf(lang) ?? 0) >= rec.park.at) g.review.push(w);
+      if (now >= rec.due || (ctx.frontierOf(frontierKey(w)) ?? 0) >= rec.park.at) g.review.push(w);
       return;
     }
     if (isDue(rec, now, card)) g.review.push(w);
-    else if (card - (rec.lastCard ?? -Infinity) >= AHEAD_MIN_CARDS && rec.st !== ST.WATCH) g.ahead.push(w);
+    // 暗記ボタンを押した語は、決めた日の確認まで前倒しで出さない
+    else if (card - (rec.lastCard ?? -Infinity) >= AHEAD_MIN_CARDS && rec.st !== ST.WATCH && !rec.mkc) g.ahead.push(w);
   };
   for (const w of index.ordered(lang)) scan(w);
   for (const w of index.phrases(lang)) scan(w);
@@ -173,14 +174,25 @@ function collect(ctx, lang) {
   // 同じ動詞で始まる句動詞は、学習枠に同時に2つまで
   g.freshPhrases = g.freshPhrases.filter((p) => !p.head || (g.heads.get(p.head) || 0) < 2);
 
+  // 単語と熟語は別々の道。どちらも同じ前線方式で、窓・易しい語の確認・背伸びを作る
   const win = frontierWindow(g.freshWords, L);
   g.window = win.items;
   g.frontier = win.frontier;
   g.easy = win.easy;
   g.stretch = g.freshWords.filter((w) => !recs[w.id] && w.d >= win.frontier + 0.1 && w.d <= win.frontier + 0.4);
   g.remWordsAhead = g.freshWords.filter((w) => w.d >= win.frontier - 0.05).length;
+
+  const pwin = frontierWindow(g.freshPhrases, L);
+  g.pWindow = pwin.items;
+  g.pFrontier = pwin.frontier;
+  g.pEasy = pwin.easy;
+  g.pStretch = g.freshPhrases.filter((p) => !recs[p.id] && p.d >= pwin.frontier + 0.1 && p.d <= pwin.frontier + 0.4);
+  g.remPhrasesAhead = g.freshPhrases.filter((p) => p.d >= pwin.frontier - 0.05).length;
   return g;
 }
+
+// 前線の記録の鍵。単語は言語名、熟語は「言語名:p」
+export const frontierKey = (w) => (w.kind === 'phrase' ? `${w.lang}:p` : w.lang);
 
 function pickReview(list, ctx) {
   const { recs, saved, now, card } = ctx;
@@ -189,7 +201,8 @@ function pickReview(list, ctx) {
     (w) => {
       const rec = recs[w.id];
       const d = w.d ?? 0.5;
-      return (1 + overdue(rec, now, card)) * (1 + 0.5 * (1 - d)) * (saved[w.id] ? 1.4 : 1) * (1 + 0.2 * (rec.lapse || 0));
+      // 暗記ボタンを押した語の最初の確認は少し優先する
+      return (1 + overdue(rec, now, card)) * (1 + 0.5 * (1 - d)) * (saved[w.id] ? 1.4 : 1) * (1 + 0.2 * (rec.lapse || 0)) * (rec.mkc ? 1.5 : 1);
     },
     ctx.rng
   );
@@ -226,36 +239,39 @@ function pickAhead(list, ctx) {
   );
 }
 
-function pickPhrase(list, frontier, rng) {
-  return sample(list, (p) => (p.hard <= frontier ? 1.5 : 0.6), rng);
+// 熟語の割合: 前線より先に残っている熟語と単語の比。
+// 進み具合(出した割合)が単語より遅れていれば増やし、進んでいれば減らす。単語と熟語がほぼ同時に終わる
+function phraseShare(g, flow) {
+  if (!g.remPhrasesAhead && !g.pWindow.length) return 0;
+  if (!g.remWordsAhead && !g.window.length) return 1;
+  const base = g.remPhrasesAhead / Math.max(1, g.remPhrasesAhead + g.remWordsAhead);
+  const lag = (1 - g.unseenWords / Math.max(1, g.totalWords)) - (1 - g.remPhrases / Math.max(1, g.totalPhrases));
+  const share = Math.min(0.5, Math.max(0.15, base + lag));
+  return flow?.bored ? Math.min(0.5, share + 0.1) : share;
 }
 
-function pickFresh(g, ctx, lang) {
-  const { rng } = ctx;
-  const words = g.window.length > 0;
-  const phrases = g.freshPhrases.length > 0;
-  if (!words && !phrases) return null;
-  // 熟語の割合: 残りの未出熟語と、前線より先の未出単語の比。
-  // 進み具合(出した割合)が単語より遅れていれば増やし、進んでいれば減らす。単語と熟語がほぼ同時に終わる
-  let share = 0;
-  if (!words) share = 1;
-  else if (phrases) {
-    const base = g.remPhrases / (g.remPhrases + g.remWordsAhead);
-    const lag = (1 - g.unseenWords / Math.max(1, g.totalWords)) - (1 - g.remPhrases / Math.max(1, g.totalPhrases));
-    share = Math.min(0.5, Math.max(0.15, base + lag));
-  }
-  if (words && phrases && ctx.flow?.bored) share = Math.min(0.5, share + 0.1);
-  if (rng() < share) return { word: pickPhrase(g.freshPhrases, g.frontier, rng), why: 'new' };
-  return { word: sample(g.window, (x) => x.wt, rng).w, why: 'new' };
+// 単語か熟語のどちらから出すか。片方が空ならもう片方
+function pickSide(words, phrases, share, rng) {
+  if (!words.length) return phrases.length ? phrases : null;
+  if (!phrases.length) return words;
+  return rng() < share ? phrases : words;
+}
+
+function pickFresh(g, ctx) {
+  const list = pickSide(g.window, g.pWindow, g.share, ctx.rng);
+  if (!list) return null;
+  return { word: sample(list, (x) => x.wt, ctx.rng).w, why: 'new' };
 }
 
 function pickFromLang(ctx, lang) {
   const { rng } = ctx;
   const g = collect(ctx, lang);
   ctx.frontiers[lang] = g.frontier;
+  ctx.frontiers[`${lang}:p`] = g.pFrontier;
   const L = ctx.L;
   const habit = ctx.habit || {};
   const flow = ctx.flow || {};
+  g.share = phraseShare(g, flow);
 
   // ① 学習枠の出番
   if (g.boxDue.length) {
@@ -278,8 +294,8 @@ function pickFromLang(ctx, lang) {
     const avg = g.check.reduce((a, w) => a + (1 - retrievability(ctx.recs[w.id], ctx.now)), 0) / g.check.length;
     pCheck = RATE.checkMin + (RATE.checkMax - RATE.checkMin) * Math.min(1, avg * 2);
   }
-  const pEasy = g.easy.length ? RATE.easy : 0;
-  let pStretch = g.stretch.length ? RATE.stretch : 0;
+  const pEasy = g.easy.length || g.pEasy.length ? RATE.easy : 0;
+  let pStretch = g.stretch.length || g.pStretch.length ? RATE.stretch : 0;
 
   // 飽きているときは復習を減らし、新しい語・背伸びへ回す
   let freed = 0;
@@ -300,13 +316,13 @@ function pickFromLang(ctx, lang) {
     });
     if (g.boxCount >= L.box + 3) {
       g.window = [];
-      g.freshPhrases = [];
+      g.pWindow = [];
     } else if (soon) {
       g.window = g.window.filter((x) => pKnown(L, x.w) >= 0.6);
-      g.freshPhrases = [];
+      g.pWindow = g.pWindow.filter((x) => pKnown(L, x.w) >= 0.6);
     }
   }
-  const canFresh = g.window.length || g.freshPhrases.length;
+  const canFresh = g.window.length || g.pWindow.length;
   let throttle = 1;
   // ③ 復習が溜まっているときは新しい語を絞る(ふだんの1日の枚数に合わせる)
   const t1 = habit.dailyAvg ? Math.max(15, habit.dailyAvg * 0.4) : 30;
@@ -342,17 +358,24 @@ function pickFromLang(ctx, lang) {
 
   // 手応えの波: 失敗の直後は、知らない可能性が高い語を続けない
   if ((kind === 'new' || kind === 'stretch') && flow.lastFail) {
-    const swap = [['review', g.review], ['easy', g.easy], ['check', g.check], ['ahead', [...g.ahead]]].find(([, l]) => l.length);
+    const swap = [['review', g.review], ['easy', [...g.easy, ...g.pEasy]], ['check', g.check], ['ahead', [...g.ahead]]].find(([, l]) => l.length);
     if (swap) kind = swap[0];
   }
 
   switch (kind) {
     case 'review': return { word: pickReview(g.review, ctx), why: 'review' };
     case 'check': return { word: pickCheck(g.check, ctx), why: 'check' };
-    case 'easy': return { word: g.easy[Math.floor(rng() * Math.min(4, g.easy.length))], why: 'easy' };
-    case 'stretch': return { word: g.stretch[Math.floor(rng() * g.stretch.length)], why: 'stretch' };
+    case 'easy': {
+      // 易しい順に先頭の数語から
+      const list = pickSide(g.easy, g.pEasy, g.share, rng);
+      return { word: list[Math.floor(rng() * Math.min(4, list.length))], why: 'easy' };
+    }
+    case 'stretch': {
+      const list = pickSide(g.stretch, g.pStretch, g.share, rng);
+      return { word: list[Math.floor(rng() * list.length)], why: 'stretch' };
+    }
     case 'new': {
-      const picked = pickFresh(g, ctx, lang);
+      const picked = pickFresh(g, ctx);
       if (picked) return picked;
       break;
     }
@@ -402,8 +425,9 @@ export function pickNext(ctx) {
 }
 
 // 前線の位置(テスト・記録の更新で使う)
-export function frontierOf(index, recs, L, lang) {
-  const fresh = index.ordered(lang).filter((w) => !recs[w.id] || recs[w.id].def);
+export function frontierOf(index, recs, L, lang, kind = 'word') {
+  const list = kind === 'phrase' ? index.phrases(lang) : index.ordered(lang);
+  const fresh = list.filter((w) => !recs[w.id] || recs[w.id].def);
   return frontierWindow(fresh, L).frontier;
 }
 
@@ -412,7 +436,7 @@ export function dueCount(words, recs, now, card) {
   let n = 0;
   for (const w of words) {
     const rec = recs[w.id];
-    if (rec && !rec.def && rec.st !== ST.MASTERED && rec.st !== ST.WATCH && isDue(rec, now, card)) n++;
+    if (rec && !rec.def && !settled(rec) && rec.st !== ST.WATCH && isDue(rec, now, card)) n++;
   }
   return n;
 }

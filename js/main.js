@@ -6,6 +6,9 @@ import { createFeed } from './feed.js';
 import { createUI } from './ui.js';
 import { createOnboarding } from './onboarding.js';
 import { icon, logo } from './icons.js';
+import { debugState } from './device.js';
+import { createInstall } from './install.js';
+import { setupPwa } from './pwa.js';
 
 function navItem(tag, nav, ic, icOn, label) {
   return `<${tag} class="nav-item" data-nav="${nav}" data-ic="${ic}" data-ic-on="${icOn}"><span class="nav-ic">${icon(ic)}</span><span class="nav-lb">${label}</span></${tag}>`;
@@ -88,32 +91,46 @@ function buildChrome(app) {
 async function boot() {
   const splash = document.getElementById('splash');
   const store = createStore();
-  const [index, manifest] = await Promise.all([
+  const [index, manifest, voices] = await Promise.all([
     loadWords(),
     fetch('data/media.json').then((r) => {
       if (!r.ok) throw new Error('素材の一覧を読み込めませんでした');
       return r.json();
     }),
+    // 読み上げ音声の一覧(無くても動く。そのときはブラウザの読み上げを使う)
+    fetch('data/voice.json').then((r) => (r.ok ? r.json() : null)).catch(() => null),
   ]);
 
   const app = { store, index, manifest };
   app.bgm = new Bgm(manifest, () => store.state.settings);
-  app.tts = new Tts((busy) => app.bgm.duck(busy));
+  app.tts = new Tts((busy) => app.bgm.duck(busy), app.bgm);
+  app.tts.setFiles(voices);
 
+  // 必ずユーザー操作のイベントの中から呼ぶ。読み上げと BGM は別々に許可を取る
+  // (BGM の読み込みが遅くても読み上げは先に使えるように)
   app.unlockAudio = () => {
-    if (app.bgm.unlocked) return;
     app.tts.unlock();
-    app.bgm.unlock().then((ok) => {
-      if (ok) {
-        removeUnlockListeners();
-        app.feed.afterUnlock();
-      }
+    if (app.bgm.unlocked) {
+      app.bgm.wake();
+      return;
+    }
+    const pending = app.bgm.unlocking;
+    const result = app.bgm.unlock();
+    if (pending) return;
+    app.feed.afterUnlock();
+    result.then((ok) => {
+      if (!ok) app.feed.refreshMuteIcons();
     });
   };
-  const unlockEvents = ['click', 'touchend', 'keydown'];
-  const onGesture = () => app.unlockAudio();
-  const removeUnlockListeners = () => unlockEvents.forEach((ev) => document.removeEventListener(ev, onGesture, true));
-  unlockEvents.forEach((ev) => document.addEventListener(ev, onGesture, true));
+  // スクロールの指離しは操作と見なされないので、タップとキー操作で取る。
+  // 許可を取った後も、止まった音声や動画を起こすために聞き続ける
+  const onGesture = (e) => {
+    const fresh = !app.bgm.unlocked;
+    app.unlockAudio();
+    if (fresh) app.unlockEvent = e;
+    app.feed.kick();
+  };
+  ['click', 'keydown'].forEach((ev) => document.addEventListener(ev, onGesture, true));
 
   app.ensureScope = (word) => {
     const s = store.state.settings;
@@ -126,6 +143,7 @@ async function boot() {
   app.feed = createFeed(app);
   app.ui = createUI(app);
   app.onboarding = createOnboarding(app);
+  app.install = createInstall(app);
 
   // 設定で出題内容を変えたら、フィードへ戻ったときに流し直す
   const originalResume = app.feed.resume;
@@ -141,10 +159,19 @@ async function boot() {
   buildChrome(app);
   splash.remove();
 
-  if (app.onboarding.needed()) app.onboarding.start(() => app.feed.start());
-  else app.feed.start();
+  // スマホのブラウザで開いたら、先にホーム画面への追加を案内する
+  // (iPhone はホーム画面版と学習記録が別になるので、実力テストより前に)
+  const begin = () => {
+    if (app.onboarding.needed()) app.onboarding.start(() => app.feed.start());
+    else app.feed.start();
+  };
+  // 保存済みの素材の一覧を少しだけ待つ(最初の動画から保存済みを選べるように)
+  await Promise.race([setupPwa(app), new Promise((r) => setTimeout(r, 400))]);
+  if (app.install.needed()) app.install.show(begin);
+  else begin();
 
   window.__tatetan = app;
+  if (debugState.on) import('./debug.js').then((m) => m.startDebug(app));
 }
 
 boot().catch((err) => {

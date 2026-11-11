@@ -1,0 +1,19 @@
+// 読み上げ音声ファイルの名前。文から決まるので、ブラウザと生成スクリプト(tools/gen-voice.mjs)で同じものを使う。
+export function voiceText(text) {
+  return String(text).replace(/[{}]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+// cyrb53(53 ビットのハッシュ)
+export function voiceKey(text) {
+  const str = voiceText(text);
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}

@@ -39,7 +39,10 @@ export function freshState() {
 function normalize(data) {
   const base = freshState();
   const learners = { ...base.learners };
-  for (const [lang, L] of Object.entries(data.learners || {})) learners[lang] = { ...newLearner(), ...L };
+  // 熟語の θ を持たない旧版の記録は、単語の θ から始める
+  for (const [lang, L] of Object.entries(data.learners || {})) learners[lang] = { ...newLearner(L.theta ?? 0.1), ...L };
+  // 旧版の「確認済み」は暗記済みへまとめた
+  for (const rec of Object.values(data.recs || {})) if (rec && rec.st === 'known') rec.st = 'mastered';
   return {
     ...base,
     ...data,

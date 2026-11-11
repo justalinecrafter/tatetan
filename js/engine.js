@@ -2,10 +2,10 @@
 //   st:  保存データ(store.state)
 //   ses: 1 回の利用のあいだだけ持つ情報 { counts, recent, flow }
 import {
-  ST, G, classify, apply, confirm, memorize, downgrade, dislike, pKnown, updateLearner, logBox, logReview,
-  pushBaseline, thresholds, newLearner, dayKey,
+  ST, G, classify, apply, memorize, unmark, dislike, pKnown, updateLearner, logBox, logReview,
+  pushBaseline, thresholds, newLearner, newTrack, thetaOf, dayKey,
 } from './srs.js';
-import { pickNext, summarizeHabits, boxStages, frontierOf } from './scheduler.js';
+import { pickNext, summarizeHabits, boxStages, frontierOf, frontierKey } from './scheduler.js';
 
 const SESSION_GAP = 30 * 60000; // これ以上空いたら別の利用とみなす
 
@@ -116,10 +116,10 @@ export function commit(st, ses, index, word, imp, { now, why, rng }) {
     const res = apply(rec, ev, word, {
       now,
       card: st.card,
-      theta: L.theta,
+      theta: thetaOf(L, word),
       pk,
       stages: boxStages(habit),
-      frontier: ses.frontiers?.[word.lang] ?? frontierOf(index, st.recs, L, word.lang),
+      frontier: ses.frontiers?.[frontierKey(word)] ?? frontierOf(index, st.recs, L, word.lang, word.kind),
       ivl: L.ivl,
       rng,
     });
@@ -136,7 +136,7 @@ export function commit(st, ses, index, word, imp, { now, why, rng }) {
       // 学習枠の大きさは、同じ利用の中での成否で決める
       if (rec.box != null && gap < 2 * 3600000) logBox(L, ev.grade >= G.GOOD);
       // 間を空けた復習の成否で、その人に合う間隔の倍率を決める
-      if (rec.box == null && (rec.st === ST.KNOWN || rec.st === ST.MASTERED) && gap > 12 * 3600000) logReview(L, ev.grade >= G.GOOD);
+      if (rec.box == null && rec.st === ST.MASTERED && gap > 12 * 3600000) logReview(L, ev.grade >= G.GOOD);
     }
   }
 
@@ -163,28 +163,28 @@ export function commit(st, ses, index, word, imp, { now, why, rng }) {
   return { ev, fx };
 }
 
-// ダブルタップ・確認ボタン: 未出・学習中 → 確認済み → 暗記済み。暗記済みなら何もしない。
-// 返り値: { action: 'confirm' | 'memorize' | null }
-export function advance(st, index, word, { revealed, now }) {
+// 利用者が暗記済みにした語か(行動からの推定だけで暗記済みになった語は含めない)
+export const isMarked = (rec) => !!rec && rec.st === ST.MASTERED && !rec.im && !rec.def;
+
+// ダブルタップ・暗記ボタン: 暗記済みにする。すでに暗記済み(推定を除く)なら何もしない。
+// 返り値: { action: 'memorize' | null }
+export function advance(st, index, word, { revealed, now, rng = Math.random }) {
   const L = learner(st, word.lang);
   const rec = st.recs[word.id];
-  const ctx = { now, card: st.card, theta: L.theta, pk: pKnown(L, word), ivl: L.ivl };
-  if (rec && rec.st === ST.MASTERED) return { action: null };
-  if (rec && rec.st === ST.KNOWN) {
-    st.recs[word.id] = memorize(rec, { revealed }, word, ctx);
-    return { action: 'memorize' };
-  }
+  if (isMarked(rec)) return { action: null };
+  const ctx = { now, card: st.card, theta: thetaOf(L, word), pk: pKnown(L, word), ivl: L.ivl };
   const first = !rec || rec.st === ST.WATCH || !!rec.def;
-  st.recs[word.id] = confirm(rec, { revealed }, word, ctx);
-  // 答えを見る前に確認した = もともと知っていた、の強い証拠
+  st.recs[word.id] = memorize(rec, { revealed }, word, { ...ctx, rng });
+  // 答えを見る前に暗記を押した = もともと知っていた、の強い証拠
   if (first && !revealed) updateLearner(L, word, 1, 0.6);
-  return { action: 'confirm' };
+  return { action: 'memorize' };
 }
 
-export function stepBack(st, word, { now }) {
+// 暗記済みを外す(学習中へ戻す)
+export function stepBack(st, word, { now, rng }) {
   const rec = st.recs[word.id];
-  if (!rec || rec.st !== ST.MASTERED) return false;
-  st.recs[word.id] = downgrade(rec, { now, card: st.card, ivl: learner(st, word.lang).ivl });
+  if (!isMarked(rec)) return false;
+  st.recs[word.id] = unmark(rec, { now, card: st.card, rng });
   return true;
 }
 
@@ -223,24 +223,26 @@ export function createPlacement(index, lang, rng = Math.random) {
   };
 }
 
-// テストの結果を記録にする。正解 = 確認済み(推定)、不正解 = 学習枠へ
+// テストの結果を記録にする。正解 = 暗記済み(推定)、不正解 = 学習枠へ
 export function applyPlacement(st, index, lang, placement, { now, rng }) {
   const L = learner(st, lang);
   L.theta = placement.theta;
   L.n = 0;
   L.tested = true;
+  // 熟語はテストに出さないので、単語と同じ位置から始めて行動で合わせていく
+  L.p = newTrack(placement.theta);
   for (const { word, correct } of placement.results) {
     const rec = st.recs[word.id];
     if (rec && rec.st !== ST.WATCH && !rec.def) continue;
     const ev = correct
       ? { kind: 'grade', grade: G.GOOD, conf: 0.6, implied: true, why: 'テストで正解' }
       : { kind: 'grade', grade: G.AGAIN, conf: 0.7, why: 'テストで不正解' };
-    const res = apply(rec, ev, word, { now, card: st.card, theta: L.theta, pk: pKnown(L, word), ivl: L.ivl, rng });
+    const res = apply(rec, ev, word, { now, card: st.card, theta: thetaOf(L, word), pk: pKnown(L, word), ivl: L.ivl, rng });
     st.recs[word.id] = res.rec;
   }
 }
 
 export function markDifficult(st, word, { now }) {
   const L = learner(st, word.lang);
-  st.recs[word.id] = dislike(st.recs[word.id], word, { now, card: st.card, theta: L.theta });
+  st.recs[word.id] = dislike(st.recs[word.id], word, { now, card: st.card, theta: thetaOf(L, word) });
 }

@@ -4,3 +4,13 @@
 
 /data/*
   Cache-Control: public, max-age=300
+
+# アプリ本体は更新をすぐ反映させる(古い JS・CSS が端末に残らないように)
+/js/*
+  Cache-Control: no-cache
+
+/css/*
+  Cache-Control: no-cache
+
+/sw.js
+  Cache-Control: no-cache

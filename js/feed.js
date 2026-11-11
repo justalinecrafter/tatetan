@@ -2,15 +2,19 @@
 // スクロールはブラウザ標準の scroll-snap に任せ(指に吸い付く感触を保つため)、
 // 中身と動画要素だけを現在位置の周辺に限って差し替える。
 import { icon } from './icons.js';
-import { ST, ST_LABEL, shownState } from './srs.js';
-import { newSession, next as pickNextCard, commit, advance, stepBack, markDifficult } from './engine.js';
+import { ST_LABEL, shownState } from './srs.js';
+import { newSession, next as pickNextCard, commit, advance, stepBack, markDifficult, isMarked } from './engine.js';
 import { Shuffler } from './media.js';
+import { DEVICE, debugLog } from './device.js';
+import { fitAll } from './fit.js';
 
 const VIDEO_POOL = 4;
 const RENDER_BEHIND = 2;
 const RENDER_AHEAD = 3;
 const DOUBLE_TAP_MS = 280;
-const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+// 読み込み中のまま動かない動画を差し替えるまでの時間
+// (Service Worker が動いているときは 1 本まるごと保存してから再生するので長めに待つ)
+const STALL_MS = navigator.serviceWorker?.controller ? 20000 : 9000;
 
 // チャンネル名は種類ごと(難易度は出さない)
 const CHANNELS = {
@@ -105,22 +109,59 @@ export function createFeed(app) {
     });
     v.addEventListener('playing', () => {
       v.classList.add('ready');
+      clearTimeout(v._stall);
       if (v._item) setBuffering(v._item, false);
     });
     v.addEventListener('waiting', () => {
-      if (v._item && v._item === items[active]) setBuffering(v._item, true);
+      if (v._item && v._item === items[active]) {
+        setBuffering(v._item, true);
+        watchStall(v);
+      }
     });
     v.addEventListener('error', () => {
-      const it = v._item;
-      if (!it || !v.getAttribute('src')) return;
-      it.videoErrors = (it.videoErrors || 0) + 1;
-      if (it.videoErrors > 3) return; // 背景のグラデーションだけで続行する
-      it.video = videoShuffler.next();
-      v._url = null;
-      bindVideo(v, it);
-      if (it === items[active] && !userPaused) v.play().catch(() => {});
+      if (!v._item || !v.getAttribute('src')) return;
+      debugLog(`video error: ${v.error?.code}`);
+      replaceVideo(v);
     });
     return v;
+  }
+
+  // 読み込めない・止まったままの動画は別の動画に差し替える
+  function replaceVideo(v) {
+    const it = v._item;
+    clearTimeout(v._stall);
+    it.videoErrors = (it.videoErrors || 0) + 1;
+    if (it.videoErrors > 3) return; // 背景のグラデーションだけで続行する
+    it.video = videoShuffler.next(true);
+    v._url = null;
+    bindVideo(v, it);
+    if (it === items[active] && !userPaused && !suspended) v.play().catch(() => {});
+  }
+
+  // 電波が弱いと読み込み中のまま固まることがあるので、しばらく待って差し替える
+  function watchStall(v) {
+    clearTimeout(v._stall);
+    v._stall = setTimeout(() => {
+      if (v._item && v._item === items[active] && !userPaused && !suspended && v.readyState < 3) {
+        debugLog('video stalled');
+        replaceVideo(v);
+      }
+    }, STALL_MS);
+  }
+
+  // 使わなくなった動画の読み込みを止めて、スマホの通信と映像処理を空ける
+  function releaseVideo(v) {
+    v.pause();
+    clearTimeout(v._stall);
+    v._item = null;
+    if (DEVICE.mobile && v.getAttribute('src')) {
+      v._url = null;
+      v._kick = false;
+      v.classList.remove('ready');
+      v.removeAttribute('src');
+      v.load();
+      v.remove();
+    }
   }
 
   function setBuffering(item, on) {
@@ -142,7 +183,7 @@ export function createFeed(app) {
       v.classList.remove('ready');
       v.src = url;
       v.load();
-      v._kick = IS_IOS; // iOS は再生を始めないと先読みしない
+      v._kick = DEVICE.ios; // iOS は再生を始めないと先読みしない
     }
   }
 
@@ -156,7 +197,12 @@ export function createFeed(app) {
       return;
     }
     const saveData = navigator.connection?.saveData;
-    const order = saveData ? [active, active + 1] : [active, active + 1, active + 2, active - 1];
+    // スマホは今の動画と次の動画(と戻ったとき用の直前の動画)だけにする
+    const order = saveData
+      ? [active, active + 1]
+      : DEVICE.mobile
+        ? [active, active + 1, active - 1]
+        : [active, active + 1, active + 2, active - 1];
     const wanted = order.map((i) => items[i]).filter(Boolean);
     const free = pool.filter((v) => !v._item || !wanted.includes(v._item));
     for (const item of wanted) {
@@ -165,10 +211,7 @@ export function createFeed(app) {
       if (v) bindVideo(v, item);
     }
     for (const v of free) {
-      if (!wanted.includes(v._item)) {
-        v.pause();
-        v._item = null;
-      }
+      if (!wanted.includes(v._item)) releaseVideo(v);
     }
     syncPlayback();
   }
@@ -177,7 +220,8 @@ export function createFeed(app) {
     const cur = items[active];
     for (const v of pool) {
       if (v._item && v._item === cur && !suspended && !userPaused) {
-        v.play().catch(() => {});
+        v.play().catch((e) => debugLog(`video play: ${e?.name}`));
+        if (v.readyState < 3) watchStall(v);
       } else if (v._item && v._kick && !suspended) {
         v.play().catch(() => {});
       } else if (!v.paused) {
@@ -253,7 +297,7 @@ export function createFeed(app) {
     const sub = w.lang === 'en'
       ? `<div class="t-sub"><span class="t-ipa">${esc(w.ipa || '')}</span><button class="t-speak" data-act="speak" aria-label="読み上げ">${icon('volumeUp', 18)}</button></div>`
       : `<div class="t-sub"><span class="t-pos">${esc(w.pos)}</span></div>`;
-    return `<div class="t-word ${w.lang === 'kb' ? 'ja' : ''}" style="font-size:${size}px">${esc(w.w)}</div>${sub}`;
+    return `<div class="t-word ${w.lang === 'kb' ? 'ja' : ''}"${w.lang === 'kb' ? '' : ' data-fit'} style="font-size:${size}px">${esc(w.w)}</div>${sub}`;
   }
 
   function pairsLine(cls, mark, pairs) {
@@ -269,7 +313,7 @@ export function createFeed(app) {
     const ex = w.ex[0];
     const reversed = w.lang === 'en' && settings().reverse;
     const head = reversed
-      ? `<div class="t-answer en" style="font-size:${fitSize(w.w, width, 0.58, 44, 26)}px">${esc(w.w)}</div>
+      ? `<div class="t-answer en" data-fit style="font-size:${fitSize(w.w, width, 0.58, 44, 26)}px">${esc(w.w)}</div>
          <div class="t-sub"><span class="t-ipa">${esc(w.ipa || '')}</span><button class="t-speak" data-act="speak" aria-label="読み上げ">${icon('volumeUp', 18)}</button></div>`
       : `<div class="t-answer">${w.lang === 'en' ? `<span class="t-pos">${esc(w.pos)}</span>` : ''}${esc(w.m.slice(0, 3).join('、'))}</div>
          ${w.kanji ? `<div class="t-kanji">漢字: ${esc(w.kanji)}</div>` : ''}`;
@@ -285,11 +329,11 @@ export function createFeed(app) {
     return `<button class="act${on ? ' on' : ''}" data-act="${act}" aria-label="${label}"><span class="act-ic">${icon(name, 26)}</span><span class="act-lb">${label}</span></button>`;
   }
 
-  // 確認・暗記ボタンの見た目。次に押すとどうなるかが分かるようにする
-  function advanceLook(status) {
-    if (status === ST.MASTERED) return { name: 'thumbUpFill', label: '暗記済み', on: true };
-    if (status === ST.KNOWN) return { name: 'thumbUp', label: '暗記', on: false };
-    return { name: 'check', label: '確認', on: false };
+  // 暗記ボタンの見た目。利用者が暗記済みにした語だけ点灯する(行動からの推定で暗記済みになった語は押せば確定する)
+  function advanceLook(word) {
+    return isMarked(S().recs[word.id])
+      ? { name: 'thumbUpFill', label: '暗記済み', on: true }
+      : { name: 'thumbUp', label: '暗記', on: false };
   }
 
   function fill(item) {
@@ -301,7 +345,7 @@ export function createFeed(app) {
     const muted = settings().muted || !bgm.unlocked;
     const kk = kindKey(w);
     const [avText, avClass] = AVATAR[kk];
-    const look = advanceLook(status);
+    const look = advanceLook(w);
     item.slide.classList.toggle('revealed', item.revealed);
     item.slide.innerHTML = `
       <div class="player">
@@ -319,7 +363,7 @@ export function createFeed(app) {
         <div class="telop">
           <div class="t-front">${frontHtml(item, width)}</div>
           <div class="t-back">${backHtml(item, width)}</div>
-          ${st.card < 8 ? '<div class="t-hint">タップで答え / ダブルタップで確認 → もう一度で暗記</div>' : ''}
+          ${st.card < 8 ? '<div class="t-hint">タップで答え / ダブルタップで暗記</div>' : ''}
         </div>
         <div class="meta">
           <div class="ch-row">
@@ -342,6 +386,7 @@ export function createFeed(app) {
         <button class="disc" data-act="more" aria-label="使用している素材" style="background:linear-gradient(135deg,hsl(${item.hue} 70% 45%),hsl(${(item.hue + 80) % 360} 70% 30%))">${icon('music', 16)}</button>
       </div>`;
     item.filled = true;
+    fitAll(item.slide);
   }
 
   function tickerText(item) {
@@ -373,7 +418,7 @@ export function createFeed(app) {
       sub.className = `sub st-${status}`;
       sub.textContent = ST_LABEL[status];
     }
-    const look = advanceLook(status);
+    const look = advanceLook(item.word);
     const adv = q('[data-act="advance"]');
     if (adv) {
       adv.classList.toggle('on', look.on);
@@ -413,7 +458,7 @@ export function createFeed(app) {
     item.seen = true;
   }
 
-  // 明示的な操作(確認・暗記・苦手)をしたカードは、行動からの推定をしない
+  // 明示的な操作(暗記・苦手)をしたカードは、行動からの推定をしない
   const isExplicit = (item) => item.snaps.length > 0 || !!item.disliked;
 
   function commitImpression() {
@@ -440,20 +485,18 @@ export function createFeed(app) {
     }, { now, why: current.item.why });
     updateChrome(current.item);
     if (fx === 'graduate') celebrate('graduate', w);
-    else if (fx === 'mastered') celebrate('mastered', w);
     store.save();
   }
 
-  // 学習枠の卒業・暗記済みへの昇格を、次のカードの上に短く知らせる
+  // 学習枠の卒業(学習中 → 暗記済み)を、次のカードの上に短く知らせる
   function celebrate(kind, word) {
     const node = document.createElement('div');
     node.className = `cele cele-${kind}`;
-    const text = kind === 'graduate' ? '覚えた!' : '暗記済みに';
-    node.innerHTML = `${icon(kind === 'graduate' ? 'school' : 'thumbUpFill', 22)}<span><b>${esc(word.w)}</b>${text}</span>`;
+    node.innerHTML = `${icon('school', 22)}<span><b>${esc(word.w)}</b>覚えた!</span>`;
     view.append(node);
     node.addEventListener('animationend', () => node.remove(), { once: true });
     setTimeout(() => node.remove(), 2600);
-    navigator.vibrate?.(kind === 'mastered' ? [10, 40, 10] : 8);
+    navigator.vibrate?.(8);
   }
 
   /* ---------- 現在位置の切替 ---------- */
@@ -506,11 +549,21 @@ export function createFeed(app) {
       bgm.commit();
     }
     speakTimer = setTimeout(() => speakFront(item), 320);
+    prefetchVoice(item);
+    prefetchVoice(items[active + 1]);
+  }
+
+  // 音声ファイルで読み上げる端末は、読みそうな文を先に読み込んでおく
+  function prefetchVoice(item) {
+    const w = item?.word;
+    if (!w || w.lang !== 'en' || !settings().tts) return;
+    tts.prefetch([w.w, settings().ttsExample ? w.ex[0]?.t : null]);
   }
 
   function canSpeak() {
     const s = settings();
-    return s.tts && !s.muted && bgm.unlocked && tts.available;
+    // BGM の許可とは切り離す(BGM が読み込めなくても読み上げは動くように)
+    return s.tts && !s.muted && tts.unlocked && tts.available;
   }
 
   function speakFront(item) {
@@ -554,7 +607,6 @@ export function createFeed(app) {
     node.style.left = `${x - rect.left}px`;
     node.style.top = `${y - rect.top}px`;
     const look = {
-      known: ['check', '確認済み'],
       mastered: ['thumbUpFill', '暗記済み'],
       already: ['thumbUpFill', 'もう暗記済み'],
     }[kind];
@@ -600,37 +652,37 @@ export function createFeed(app) {
     btn?.classList.add('pop');
   }
 
-  // ダブルタップ・確認ボタン: 未出・学習中 → 確認済み → 暗記済み。結果は語の状態として保存する。
-  // 暗記済みのとき、ダブルタップでは何も変えない。ボタンなら確認済みへ1段階戻す。
+  // ダブルタップ・暗記ボタン: 暗記済みにする。結果は語の状態として保存する。
+  // 暗記済みのとき、ダブルタップでは何も変えない。ボタンなら外す(このカードで押した直後なら取り消し)。
   function advanceWord(item, viaDouble, point) {
     const st = S();
     const w = item.word;
     const now = Date.now();
-    if (statusOf(w) === ST.MASTERED) {
+    if (isMarked(st.recs[w.id])) {
       if (viaDouble) {
         burst(point.x, point.y, 'already');
+        return;
+      }
+      if (item.snaps.length) {
+        popSnap(item);
         return;
       }
       pushSnap(item);
       stepBack(st, w, { now });
       store.save();
       updateChrome(item);
-      app.ui.snack('確認済みに戻しました', { label: '取り消す', run: () => popSnap(item) });
+      app.ui.snack('暗記済みを外しました', { label: '取り消す', run: () => popSnap(item) });
       return;
     }
     pushSnap(item);
-    const { action } = advance(st, index, w, { revealed: item.revealed, now });
+    advance(st, index, w, { revealed: item.revealed, now });
     item.disliked = false;
     item.dislikeSnap = null;
     store.save();
     updateChrome(item);
     popButton(item);
-    const kind = action === 'memorize' ? 'mastered' : 'known';
-    if (viaDouble) burst(point.x, point.y, kind);
-    app.ui.snack(kind === 'mastered' ? '暗記済みにしました' : '確認済みにしました。もう一度で暗記済み', {
-      label: '取り消す',
-      run: () => popSnap(item),
-    });
+    if (viaDouble) burst(point.x, point.y, 'mastered');
+    app.ui.snack('暗記済みにしました', { label: '取り消す', run: () => popSnap(item) });
     dismissCoach();
   }
 
@@ -699,9 +751,11 @@ export function createFeed(app) {
     item.slide.querySelector('.pbtn[data-act="pause"]')?.replaceChildren(iconNode(userPaused ? 'play' : 'pause'));
   }
 
-  function toggleMute() {
-    if (!bgm.unlocked) {
+  function toggleMute(event) {
+    // このタップで初めて音声の許可を取ったときは、ミュートの切替はしない
+    if (!bgm.unlocked || event === app.unlockEvent) {
       app.unlockAudio();
+      refreshMuteIcons();
       return;
     }
     settings().muted = !settings().muted;
@@ -735,13 +789,13 @@ export function createFeed(app) {
       case 'share': share(item); break;
       case 'more': app.ui.openMore(item); break;
       case 'pause': togglePause(item); break;
-      case 'mute': toggleMute(); break;
+      case 'mute': toggleMute(event); break;
       case 'search': app.ui.openPage('library', { focus: true }); break;
       case 'settings': app.ui.openPage('settings'); break;
       case 'speak':
         if (imp && imp.item === item) imp.replay = true;
         if (canSpeak()) tts.speak(item.word.w, settings().ttsRate);
-        else if (!bgm.unlocked) app.unlockAudio();
+        else app.unlockAudio();
         break;
       default:
     }
@@ -836,7 +890,12 @@ export function createFeed(app) {
   new ResizeObserver(() => {
     if (active < 0) return;
     el.scrollTop = active * el.clientHeight;
+    for (const item of items) if (item.filled) fitAll(item.slide);
   }).observe(el);
+  // 文字の大きさを測るのはフォントの読み込みが終わってから
+  document.fonts?.ready.then(() => {
+    for (const item of items) if (item.filled) fitAll(item.slide);
+  });
 
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) feed.suspend();
@@ -911,6 +970,12 @@ export function createFeed(app) {
       beginImpression(item, { manual: true });
     },
     refreshMuteIcons,
+    // タップのたびに呼ぶ。省電力モードなどで止められた動画をもう一度再生する
+    kick() {
+      if (suspended || userPaused || !settings().video) return;
+      const v = pool.find((x) => x._item && x._item === items[active]);
+      if (v && v.paused) v.play().catch(() => {});
+    },
     afterUnlock() {
       refreshMuteIcons();
       const item = items[active];
@@ -925,6 +990,8 @@ export function createFeed(app) {
       refreshVideos();
     },
     debug: () => ({ active, count: items.length, imp, pool: pool.map((v) => v._url), recent: [...ses.recent], flow: ses.flow }),
+    videoShuffler,
+    activeVideo: () => pool.find((x) => x._item && x._item === items[active]) || null,
   };
 
   function showCoach() {
@@ -935,7 +1002,7 @@ export function createFeed(app) {
       <div class="coach-box">
         <p><b>上にスワイプ</b>次の単語へ</p>
         <p><b>タップ</b>答えと例文を見る</p>
-        <p><b>ダブルタップ</b>知ってた! → もう一度で暗記</p>
+        <p><b>ダブルタップ</b>知ってた! 暗記済みにする</p>
         <small>どこかをタップして始める</small>
       </div>`;
     node.addEventListener('click', (e) => {

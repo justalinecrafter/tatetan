@@ -1,6 +1,7 @@
 // 初回の実力テスト。結果は内部の実力 θ(単語リスト上の位置)としてだけ使い、画面にはレベルを出さない。
 import { createPlacement, applyPlacement, TEST_QUESTIONS } from './engine.js';
 import { icon, logo } from './icons.js';
+import { fitAll } from './fit.js';
 
 const esc = (s) =>
   String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -72,13 +73,14 @@ export function createOnboarding(app) {
         <div class="ob ob-test-screen">
           <div class="ob-progress"><span style="width:${(qNo / TEST_QUESTIONS) * 100}%"></span></div>
           <p class="ob-count">${qNo + 1} / ${TEST_QUESTIONS}</p>
-          <div class="ob-word">${esc(w.w)}</div>
+          <div class="ob-word" data-fit>${esc(w.w)}</div>
           <div class="ob-list">
             ${options.map((o) => `<button class="ob-choice" data-a="${esc(o)}">${esc(o)}</button>`).join('')}
             <button class="ob-choice ob-skip" data-a="">わからない</button>
           </div>
           <button class="ob-quit" id="obQuit">やめる</button>
         </div>`;
+      fitAll(root);
       root.querySelectorAll('.ob-choice').forEach((b) => {
         b.addEventListener('click', () => {
           placement.answer(w, b.dataset.a === w.m[0]);

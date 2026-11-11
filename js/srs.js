@@ -5,32 +5,36 @@
 // 利用者は正誤を入力しないので、滞在時間や答えの表示などの行動から
 // 「思い出せたか(grade)」と「その推定の確からしさ(conf)」を見積もり、conf の分だけ安定度を更新する。
 //
-// 覚えかけの語は「学習枠」に入れ、枚数で刻んだ短い間隔(約4 → 10 → 25枚)で確かめてから卒業させる。
-// 実力 θ は単語リスト上の位置(0〜1)で表し、「知っている確率」は θ を中心としたなだらかな坂で持つ。
+// 覚えかけの語は「学習枠」に入れ、枚数で刻んだ短い間隔(約4 → 10 → 25枚)で確かめてから卒業(暗記済み)させる。
+// 暗記済みは1つの状態だけ。そのうち安定度が十分に育った語(定着)は、抜き打ちでたまに出すだけにする。
+// 実力 θ はリスト上の位置(0〜1)で表し、「知っている確率」は θ を中心としたなだらかな坂で持つ。
+// 単語と熟語はリストが別なので、θ と坂の幅もそれぞれに持つ。
 
 export const DAY = 86400000;
 const F = 19 / 81;
 const C = -0.5;
 
-export const ST = { NEW: 'new', WATCH: 'watch', LEARNING: 'learning', KNOWN: 'known', MASTERED: 'mastered' };
+export const ST = { NEW: 'new', WATCH: 'watch', LEARNING: 'learning', MASTERED: 'mastered' };
 export const ST_LABEL = {
   new: '未出',
   watch: '様子見',
   learning: '学習中',
-  known: '確認済み',
   mastered: '暗記済み',
 };
-// 画面に出す状態は4つ。様子見(判断材料が足りない語)は未出として見せる。
-export const SHOWN_STATES = [ST.NEW, ST.LEARNING, ST.KNOWN, ST.MASTERED];
+// 画面に出す状態は3つ。様子見(判断材料が足りない語)は未出として見せる。
+export const SHOWN_STATES = [ST.NEW, ST.LEARNING, ST.MASTERED];
 export const shownState = (rec) => (!rec || rec.st === ST.WATCH || rec.def ? ST.NEW : rec.st);
 
 export const G = { AGAIN: 1, HARD: 2, GOOD: 3, EASY: 4 };
 
-// 次回出題までに許す記憶保持率。暗記済みは下がるまで待つので、めったに出ない。
-const TARGET_R = { learning: 0.9, known: 0.88, mastered: 0.8 };
+// 次回出題までに許す記憶保持率。定着した語は下がるまで待つので、めったに出ない。
+const TARGET_R = { learning: 0.9, mastered: 0.88, settled: 0.8 };
 export const BOX_GAPS = [4, 10, 25, 40]; // 学習枠の段ごとの間隔(枚)。4段目は間を空けて使う人だけ
-export const MASTER_S = 21; // 暗記済みにする安定度(日)
-const MASTER_DAYS = 2; // 暗記済みにするのに必要な、成功した日の数
+export const MASTER_S = 21; // 定着とみなす安定度(日)
+const MASTER_DAYS = 2; // 定着とみなすのに必要な、成功した日の数(暗記ボタンを押した語)
+const BEHAVIOR_DAYS = 3; // 行動の推定だけで暗記済みになった語は、成功した日をもう1日求める
+const MARK_S = 10; // 答えを見る前に暗記ボタンを押し、別の日にも思い出せた語は、このくらいの安定度で定着とみなす
+const MARK_CHECK = { 2: [2, 4], 1: [1, 3] }; // 暗記ボタンを押した語の最初の確認(日)。押した日のうちは出さない
 const PARK_FAILS = 4; // 学習枠で何回失敗したら後回しにするか
 const MAX_S = 1500;
 const MIN_S = 0.005;
@@ -55,55 +59,53 @@ export function intervalDays(s, targetR) {
 
 /* ---------- 学習者のモデル(言語ごと) ---------- */
 
+export const newTrack = (theta) => ({
+  theta, // 坂の中心。知っている確率が 50% になる位置
+  w: 0.08, // 坂の幅
+  n: 0, // θ を更新した回数
+  cal: { z: 1 }, // 坂から遠い語での予測の外れ(見込みどおりなら 1)
+});
+
 export function newLearner(theta = 0.1) {
   return {
-    theta, // 坂の中心。知っている確率が 50% になる位置
-    w: 0.08, // 坂の幅
-    n: 0, // θ を更新した回数
+    ...newTrack(theta), // 単語リストの θ・坂
+    p: newTrack(theta), // 熟語リストの θ・坂。最初は単語と同じ位置から始め、行動で合わせていく
     tested: false,
-    cal: { z: 1 }, // 坂から遠い語での予測の外れ(見込みどおりなら 1)
-    phr: { 句動詞: [1, 1], 熟語: [1, 1] }, // 熟語の既知率(知っていた / 知らなかった の重み)
     box: 8, // 学習枠の大きさ
     boxLog: [], // 学習枠の復習の成否(直近30回)
     ivl: 1, // 復習の間隔の倍率
   };
 }
 
+// 語の種類に応じた θ・坂(単語は学習者そのもの、熟語は L.p)
+export function trackOf(L, word) {
+  if (word.kind !== 'phrase') return L;
+  if (!L.p) L.p = newTrack(L.theta);
+  return L.p;
+}
+export const thetaOf = (L, word) => trackOf(L, word).theta;
+
 // 学習者が語を(アプリで覚える前から)知っている確率
 export function pKnown(L, word) {
-  if (word.kind === 'phrase') {
-    const [a, b] = L.phr[word.pos] || L.phr['熟語'];
-    return a / (a + b);
-  }
-  return 1 / (1 + Math.exp(-(L.theta - word.d) / L.w));
+  const T = trackOf(L, word);
+  return 1 / (1 + Math.exp(-(T.theta - word.d) / T.w));
 }
 
-// 初めて見た語への反応で θ・坂の幅・熟語の既知率を更新する。y: 知っていた度合い(0〜1)
+// 初めて見た語への反応で θ・坂の幅を更新する。y: 知っていた度合い(0〜1)
 export function updateLearner(L, word, y, weight) {
   if (!weight) return;
-  if (word.kind === 'phrase') {
-    const key = L.phr[word.pos] ? word.pos : '熟語';
-    const c = L.phr[key];
-    c[0] += y * weight;
-    c[1] += (1 - y) * weight;
-    const total = c[0] + c[1];
-    if (total > 40) {
-      c[0] *= 40 / total;
-      c[1] *= 40 / total;
-    }
-    return;
-  }
+  const T = trackOf(L, word);
   const p = pKnown(L, word);
-  const lr = Math.max(0.012, 0.06 / (1 + L.n / 25));
-  L.theta = clamp(L.theta + lr * weight * (y - p), -0.05, 1.05);
-  L.n++;
+  const lr = Math.max(0.012, 0.06 / (1 + T.n / 25));
+  T.theta = clamp(T.theta + lr * weight * (y - p), -0.05, 1.05);
+  T.n++;
   // 坂から遠い語で外れが見込みより多いなら坂をなだらかに、少ないなら急にする。
   // 外れの大きさは1回ごとに上限を設ける(知っている語でのうっかりミス1回で坂が崩れないように)
-  if (Math.abs(L.theta - word.d) / L.w > 1.5) {
+  if (Math.abs(T.theta - word.d) / T.w > 1.5) {
     const z2 = Math.min(6, ((y - p) * (y - p)) / Math.max(0.01, p * (1 - p)));
-    L.cal.z = 0.95 * (L.cal.z ?? 1) + 0.05 * z2;
-    if (L.cal.z > 1.4) L.w = Math.min(0.15, L.w * 1.01);
-    else if (L.cal.z < 0.7) L.w = Math.max(0.05, L.w * 0.99);
+    T.cal.z = 0.95 * (T.cal.z ?? 1) + 0.05 * z2;
+    if (T.cal.z > 1.4) T.w = Math.min(0.15, T.w * 1.01);
+    else if (T.cal.z < 0.7) T.w = Math.max(0.05, T.w * 0.99);
   }
 }
 
@@ -144,7 +146,18 @@ export function pushBaseline(baseline, sec) {
 
 const isFirst = (rec) => !rec || rec.st === ST.WATCH || !!rec.def;
 
-// 行動 → 記憶の推定。明示的な確認・暗記・苦手は別経路(confirm / memorize / dislike)で処理する。
+// 暗記済みのうち、別の日に何度も思い出せた語(定着)。抜き打ちでたまに出すだけ。
+// 利用者が暗記ボタンを押した語(mk)は強い証拠として扱い、少ない確認で定着にする。
+//   mk = 2: 答えを見る前に押した  mk = 1: 答えを見てから押した  mkc: 押したあとの最初の確認がまだ
+export function settled(rec) {
+  if (!rec || rec.st !== ST.MASTERED || rec.im || rec.mkc) return false;
+  const days = rec.okd?.length || 0;
+  if (rec.mk === 2) return rec.s >= MARK_S && days >= MASTER_DAYS;
+  if (rec.mk === 1) return rec.s >= MASTER_S && days >= MASTER_DAYS;
+  return rec.s >= MASTER_S && days >= BEHAVIOR_DAYS;
+}
+
+// 行動 → 記憶の推定。明示的な暗記・苦手は別経路(memorize / dislike)で処理する。
 //   imp: { frontMs, backMs, revealed, detail, returned, manual, replay, saved, chars, mcount, exlen }
 //   ctx: { baseline, pk, skimming, stretch }
 // 返す y / w は θ の更新に使う(初めて見た語だけ)。
@@ -230,7 +243,7 @@ export function classify(imp, rec, ctx) {
 /* ---------- 記録の更新 ---------- */
 
 function initialDifficulty(ctx, word) {
-  if (word.kind !== 'word') return 5;
+  if (word.d == null || ctx.theta == null) return 5;
   return clamp(5 + (word.d - ctx.theta) * 12, 1, 10);
 }
 
@@ -284,25 +297,18 @@ function enterBox(rec, stage, ctx) {
 function scheduleDays(rec, ctx) {
   rec.box = null;
   rec.dueCard = null;
-  rec.due = ctx.now + intervalDays(rec.s, TARGET_R[rec.st] || 0.9) * (ctx.ivl || 1) * DAY;
+  const target = settled(rec) ? TARGET_R.settled : TARGET_R[rec.st] || 0.9;
+  rec.due = ctx.now + intervalDays(rec.s, target) * (ctx.ivl || 1) * DAY;
 }
 
-// 確認済み・暗記済みの語を、間を空けて復習した結果で間隔の倍率を調整する
+// 暗記済みの語を、間を空けて復習した結果で間隔の倍率を調整する
 export function logReview(L, success) {
   L.ivl = clamp((L.ivl || 1) * (success ? 1.01 : 0.94), 0.4, 2);
 }
 
-function promote(rec) {
-  if (rec.st === ST.KNOWN && !rec.im && rec.s >= MASTER_S && rec.okd.length >= MASTER_DAYS) {
-    rec.st = ST.MASTERED;
-    return true;
-  }
-  return false;
-}
-
 // classify の結果を単語の記録へ反映する。
 //   ctx: { now, card, theta, pk, stages(3 か 4), frontier, rng }
-//   返り値: { rec, fx }  fx は演出の種類('known' | 'graduate' | 'mastered' | null)
+//   返り値: { rec, fx }  fx は演出の種類('graduate' | null)
 export function apply(rec, ev, word, ctx) {
   if (ev.kind === 'none') return { rec, fx: null };
   const rng = ctx.rng || Math.random;
@@ -335,7 +341,7 @@ export function apply(rec, ev, word, ctx) {
   if (wasFirst) {
     delete next.def;
     if (ev.implied) {
-      next.st = ST.KNOWN;
+      next.st = ST.MASTERED;
       next.im = true;
       next.s = 2 + 6 * (ctx.pk ?? 0.8);
       scheduleDays(next, ctx);
@@ -364,6 +370,14 @@ export function apply(rec, ev, word, ctx) {
     addOkDay(next, ctx.now);
     next.im = false; // 推定だけで上がった語も、復習で成功すれば裏が取れた
   }
+  // 暗記ボタンを押した語の確認。忘れていたら、押したことを証拠として使うのをやめる
+  if (ev.grade === G.AGAIN) {
+    delete next.mk;
+    delete next.mkc;
+  } else if (rec.mkc && ctx.now - rec.last >= 12 * 3600000) {
+    delete next.mkc; // 別の日に確かめられた
+    if (!success && next.mk === 2) next.mk = 1; // 迷ったなら、答えを見てから押したのと同じ扱いに
+  }
   if (ev.lapse) next.lapse = (next.lapse || 0) + 1;
 
   if (next.box != null) {
@@ -371,7 +385,7 @@ export function apply(rec, ev, word, ctx) {
     const gapped = ctx.now - rec.last > 12 * 3600000;
     if (success) {
       if (next.box >= stages || gapped) {
-        next.st = ST.KNOWN;
+        next.st = ST.MASTERED;
         next.s = Math.max(next.s, 0.6); // 翌日の利用で確かめる
         next.fail = 0;
         scheduleDays(next, ctx);
@@ -402,8 +416,8 @@ export function apply(rec, ev, word, ctx) {
   }
 
   if (ev.grade === G.AGAIN) {
-    if (next.st === ST.MASTERED && !rec.im) {
-      next.st = ST.KNOWN;
+    // 定着していた語の1回のど忘れは、学習枠へ戻さず間隔を縮めるだけ
+    if (settled(rec)) {
       next.s = Math.max(next.s, 0.5);
       scheduleDays(next, ctx);
     } else {
@@ -412,15 +426,13 @@ export function apply(rec, ev, word, ctx) {
     }
     return { rec: next, fx };
   }
-  if (ev.weak && next.st === ST.MASTERED) next.st = ST.KNOWN;
-  if (next.st === ST.LEARNING) next.st = ST.KNOWN;
-  if (promote(next)) fx = 'mastered';
+  if (next.st === ST.LEARNING) next.st = ST.MASTERED;
   scheduleDays(next, ctx);
   return { rec: next, fx };
 }
 
-// 利用者が「確認」を押した(未出・学習中 → 確認済み)。答えを見ずに押したなら本当に知っていたとみなす。
-export function confirm(rec, imp, word, ctx) {
+// 利用者が「暗記」を押した(未出・学習中・推定の暗記済み → 暗記済み)。答えを見ずに押したなら本当に知っていたとみなす。
+export function memorize(rec, imp, word, ctx) {
   const next = copy(rec, ctx, word);
   const wasFirst = isFirst(rec);
   touch(next, ctx);
@@ -433,38 +445,30 @@ export function confirm(rec, imp, word, ctx) {
   next.d = clamp(next.d - 0.4, 1, 10);
   next.ok = (next.ok || 0) + 1;
   addOkDay(next, ctx.now);
-  next.st = ST.KNOWN;
-  next.im = false;
-  next.fail = 0;
-  delete next.park;
-  delete next.def;
-  scheduleDays(next, ctx);
-  return next;
-}
-
-// 利用者が「暗記」を押した(確認済み → 暗記済み)
-export function memorize(rec, imp, word, ctx) {
-  const next = copy(rec, ctx, word);
-  touch(next, ctx);
-  next.s = Math.max(imp.revealed ? 10 : 30, next.s);
-  next.d = clamp(next.d - 0.6, 1, 10);
-  next.ok = (next.ok || 0) + 1;
-  addOkDay(next, ctx.now);
   next.st = ST.MASTERED;
   next.im = false;
   next.fail = 0;
+  next.mk = Math.max(next.mk || 0, imp.revealed ? 1 : 2);
+  next.mkc = 1;
   delete next.park;
   delete next.def;
   scheduleDays(next, ctx);
+  // 最初の確認は数日後に寄せる(押した日のうちには出さない。遠すぎる場合も数日後に一度確かめる)
+  const [lo, hi] = MARK_CHECK[next.mk];
+  const days = clamp((next.due - ctx.now) / DAY, lo, hi) * (0.9 + 0.2 * (ctx.rng || Math.random)());
+  next.due = ctx.now + days * DAY;
   return next;
 }
 
-// 暗記済みを1段階戻す(暗記済み → 確認済み)
-export function downgrade(rec, ctx) {
+// 暗記済みを外す(暗記済み → 学習中)。学習枠の2段目から確かめ直す
+export function unmark(rec, ctx) {
   const next = { ...rec, okd: [...(rec.okd || [])] };
-  next.st = ST.KNOWN;
-  next.s = Math.min(next.s, 7);
-  scheduleDays(next, ctx);
+  next.s = Math.min(next.s, 0.5);
+  next.im = false;
+  next.fail = 0;
+  delete next.mk;
+  delete next.mkc;
+  enterBox(next, 2, ctx);
   return next;
 }
 
@@ -478,6 +482,8 @@ export function dislike(rec, word, ctx) {
   if (!wasFirst) next.lapse = (next.lapse || 0) + 1;
   next.im = false;
   next.fail = 0;
+  delete next.mk;
+  delete next.mkc;
   enterBox(next, 1, ctx);
   return next;
 }

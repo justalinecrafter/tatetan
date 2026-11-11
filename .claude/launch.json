@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "tatetan",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["tools/serve.py"],
+      "port": 8765
+    }
+  ]
+}

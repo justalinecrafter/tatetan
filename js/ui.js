@@ -1,9 +1,11 @@
 // シート、スナックバー、各ページ。
 import { icon, logo } from './icons.js';
-import { ST, ST_LABEL, SHOWN_STATES, shownState, retrievability } from './srs.js';
+import { ST, ST_LABEL, SHOWN_STATES, shownState, retrievability, settled } from './srs.js';
 import { dueCount } from './scheduler.js';
 import { markExample } from './feed.js';
 import { streak, todayKey } from './store.js';
+import { DEVICE } from './device.js';
+import { PWA_ON, storageUsage, clearMedia } from './pwa.js';
 
 const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -192,7 +194,11 @@ export function createUI(app) {
           ? '(いったん後回し)'
           : rec.im
             ? '(行動からの推定)'
-            : '';
+            : rec.mkc
+              ? '(数日後に確認)'
+              : settled(rec)
+                ? '(定着)'
+                : '';
     return `<div class="pair"><b>状態</b><span>${ST_LABEL[shown]}${note}</span></div>
       <div class="pair"><b>見た回数</b><span>${rec.n}回</span></div>
       <div class="pair"><b>記憶の推定</b><span>${retain}</span></div>
@@ -470,7 +476,7 @@ export function createUI(app) {
     const now = Date.now();
     // 状態ごとの語数(単語・熟語・古典を分けて)。レベルは表示しない
     const statusLine = ([, label, match]) => {
-      const c = { new: 0, learning: 0, known: 0, mastered: 0 };
+      const c = { new: 0, learning: 0, mastered: 0 };
       let total = 0;
       for (const w of index.words) {
         if (!match(w)) continue;
@@ -518,6 +524,33 @@ export function createUI(app) {
     return `<label class="set"><span>${esc(label)}${sub ? `<small>${esc(sub)}</small>` : ''}</span><input id="${id}" type="checkbox" class="sw"${value ? ' checked' : ''}></label>`;
   }
 
+  // スマホだけ: ホーム画面への追加と、端末に保存した素材
+  function appSection() {
+    if (!DEVICE.mobile) return '';
+    return `<h3>アプリ</h3>
+        ${app.install.available() ? '<button class="set set-btn" id="setInstall"><span>ホーム画面に追加する方法</span></button>' : ''}
+        ${PWA_ON ? '<button class="set set-btn" id="setClearMedia"><span>端末に保存した動画・音楽を消す<small id="setUsage">保存量を調べています…</small></span></button>' : ''}
+        <button class="set set-btn" id="setReload"><span>アプリを再読み込み<small>表示がおかしいときに</small></span></button>`;
+  }
+
+  function bindAppSection() {
+    const $ = (id) => page.querySelector(`#${id}`);
+    $('setInstall')?.addEventListener('click', () => app.install.show());
+    $('setReload')?.addEventListener('click', () => location.reload());
+    const usage = $('setUsage');
+    const showUsage = async () => {
+      const mb = await storageUsage();
+      if (usage) usage.textContent = mb === null ? '一度見た動画や音楽を保存して、通信量を減らしています' : `いま約 ${mb}MB を保存しています`;
+    };
+    if (usage) showUsage();
+    $('setClearMedia')?.addEventListener('click', async () => {
+      if (!confirm('端末に保存した動画・音楽・読み上げ音声を消しますか?学習記録は消えません。')) return;
+      await clearMedia(app);
+      snack('保存した素材を消しました');
+      showUsage();
+    });
+  }
+
   function renderSettings() {
     const s = S().settings;
     page.innerHTML = `${pageHead('設定')}
@@ -541,6 +574,7 @@ export function createUI(app) {
         <input id="setImportFile" type="file" accept="application/json,.json" hidden>
         <button class="set set-btn danger" id="setReset"><span>学習データをすべて消す</span></button>
         <p class="note">学習データはこの端末のブラウザにだけ保存されます。ブラウザのデータを消すと失われるので、ときどき書き出してください。</p>
+        ${appSection()}
         <h3>このアプリについて</h3>
         <button class="set set-btn" id="setCredits"><span>クレジット</span></button>
       </div>`;
@@ -562,6 +596,7 @@ export function createUI(app) {
     change('setVideo', (t) => { s.video = t.checked; app.feed.setVideoEnabled(); });
     $('setTest').addEventListener('click', () => app.onboarding.startTest());
     $('setCredits').addEventListener('click', () => openPage('credits'));
+    bindAppSection();
     $('setExport').addEventListener('click', () => {
       const blob = new Blob([store.exportJson()], { type: 'application/json' });
       const a = document.createElement('a');
