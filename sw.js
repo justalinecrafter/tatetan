@@ -8,7 +8,7 @@
 const SHELL = 'tatetan-shell-v1';
 const MEDIA = {
   video: { cache: 'tatetan-video-v1', limit: 50 }, // 1 本 平均 3.5MB → 最大 約 175MB
-  bgm: { cache: 'tatetan-bgm-v1', limit: 40 }, // 1 曲 平均 2.3MB → 最大 約 90MB
+  bgm: { cache: 'tatetan-bgm-v2', limit: 40 }, // 1 曲 平均 2.3MB → 最大 約 90MB
   voice: { cache: 'tatetan-voice-v1', limit: 9000 }, // 全部で約 60MB
 };
 const KEEP = new Set([SHELL, ...Object.values(MEDIA).map((m) => m.cache)]);
@@ -25,6 +25,7 @@ const SHELL_FILES = [
   'js/fit.js',
   'js/icons.js',
   'js/install.js',
+  'js/lists.js',
   'js/media.js',
   'js/onboarding.js',
   'js/pwa.js',

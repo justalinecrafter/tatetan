@@ -1051,6 +1051,22 @@
 "author": "Engin_Akyurt",
 "url": "https://pixabay.com/videos/id-64638/",
 "tags": "ink, paint, smoke"
+},
+{
+"f": "own_tatetan1.mp4",
+"dur": 20.0,
+"author": "縦単",
+"credit": "映像：自作(Minecraft のプレイ映像)",
+"url": "",
+"tags": "minecraft, water, ocean monument"
+},
+{
+"f": "own_tatetan2.mp4",
+"dur": 14.67,
+"author": "縦単",
+"credit": "映像：自作(Minecraft のプレイ映像)",
+"url": "",
+"tags": "minecraft, ice, stone"
 }
 ],
 "bgm": [
@@ -1074,7 +1090,7 @@
 "f": "maou_bgm_piano_song_feels_happiness.mp3",
 "title": "piano song feels happiness",
 "genre": "piano",
-"dur": 337.8,
+"dur": 113.7,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1130,7 +1146,7 @@
 "f": "maou_bgm_acoustic51.mp3",
 "title": "acoustic51",
 "genre": "acoustic",
-"dur": 165.9,
+"dur": 128.0,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1186,7 +1202,7 @@
 "f": "maou_bgm_acoustic41.mp3",
 "title": "acoustic41",
 "genre": "acoustic",
-"dur": 145.4,
+"dur": 118.8,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1202,7 +1218,7 @@
 "f": "maou_bgm_neorock34.mp3",
 "title": "neorock34",
 "genre": "neorock",
-"dur": 149.9,
+"dur": 126.0,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1226,7 +1242,7 @@
 "f": "maou_bgm_healing02.mp3",
 "title": "healing02",
 "genre": "healing",
-"dur": 144.5,
+"dur": 121.2,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1282,7 +1298,7 @@
 "f": "maou_bgm_cyber26.mp3",
 "title": "cyber26",
 "genre": "cyber",
-"dur": 152.6,
+"dur": 124.8,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1314,7 +1330,7 @@
 "f": "maou_bgm_ethnic18.mp3",
 "title": "ethnic18",
 "genre": "ethnic",
-"dur": 142.5,
+"dur": 119.0,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1322,7 +1338,7 @@
 "f": "maou_bgm_piano34.mp3",
 "title": "piano34",
 "genre": "piano",
-"dur": 234.6,
+"dur": 116.2,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1330,7 +1346,7 @@
 "f": "maou_bgm_piano_song_milkeyway.mp3",
 "title": "piano song milkeyway",
 "genre": "piano",
-"dur": 257.7,
+"dur": 120.8,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1362,7 +1378,7 @@
 "f": "maou_bgm_piano_song_calendula.mp3",
 "title": "piano song calendula",
 "genre": "piano",
-"dur": 308.6,
+"dur": 115.2,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1370,7 +1386,7 @@
 "f": "maou_bgm_orchestra22.mp3",
 "title": "orchestra22",
 "genre": "orchestra",
-"dur": 157.2,
+"dur": 120.0,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1434,7 +1450,7 @@
 "f": "maou_bgm_neorock39.mp3",
 "title": "neorock39",
 "genre": "neorock",
-"dur": 146.0,
+"dur": 112.5,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1474,7 +1490,7 @@
 "f": "maou_bgm_healing11.mp3",
 "title": "healing11",
 "genre": "healing",
-"dur": 323.1,
+"dur": 120.3,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1514,7 +1530,7 @@
 "f": "maou_bgm_8bit13.mp3",
 "title": "8bit13",
 "genre": "8bit",
-"dur": 194.0,
+"dur": 116.6,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1522,7 +1538,7 @@
 "f": "maou_bgm_cyber17.mp3",
 "title": "cyber17",
 "genre": "cyber",
-"dur": 152.4,
+"dur": 120.3,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1530,7 +1546,7 @@
 "f": "maou_bgm_orchestra03.mp3",
 "title": "orchestra03",
 "genre": "orchestra",
-"dur": 155.0,
+"dur": 122.8,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1594,7 +1610,7 @@
 "f": "maou_bgm_cyber41.mp3",
 "title": "cyber41",
 "genre": "cyber",
-"dur": 158.4,
+"dur": 120.6,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1626,7 +1642,7 @@
 "f": "maou_bgm_orchestra12.mp3",
 "title": "orchestra12",
 "genre": "orchestra",
-"dur": 169.1,
+"dur": 119.8,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1666,7 +1682,7 @@
 "f": "maou_bgm_ethnic20.mp3",
 "title": "ethnic20",
 "genre": "ethnic",
-"dur": 160.4,
+"dur": 120.8,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1714,7 +1730,7 @@
 "f": "maou_bgm_cyber11.mp3",
 "title": "cyber11",
 "genre": "cyber",
-"dur": 147.9,
+"dur": 120.2,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1762,7 +1778,7 @@
 "f": "maou_bgm_cyber36.mp3",
 "title": "cyber36",
 "genre": "cyber",
-"dur": 161.5,
+"dur": 118.0,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1778,7 +1794,7 @@
 "f": "maou_bgm_healing17.mp3",
 "title": "healing17",
 "genre": "healing",
-"dur": 177.6,
+"dur": 123.5,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1826,7 +1842,7 @@
 "f": "maou_bgm_cyber19.mp3",
 "title": "cyber19",
 "genre": "cyber",
-"dur": 144.4,
+"dur": 122.2,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1834,7 +1850,7 @@
 "f": "maou_bgm_healing14b.mp3",
 "title": "healing14b",
 "genre": "healing",
-"dur": 155.3,
+"dur": 121.0,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1842,7 +1858,7 @@
 "f": "maou_bgm_piano_sinfonia02.mp3",
 "title": "piano sinfonia02",
 "genre": "piano",
-"dur": 271.4,
+"dur": 124.5,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
 },
@@ -1853,6 +1869,46 @@
 "dur": 74.5,
 "credit": "音楽：魔王魂",
 "url": "https://maou.audio/all/"
+},
+{
+"f": "maou_bgm_fantasy03.mp3",
+"title": "fantasy03",
+"genre": "fantasy",
+"dur": 121.0,
+"credit": "音楽：魔王魂",
+"url": "https://maou.audio/all/"
+},
+{
+"f": "maou_short_08_burning_heart.mp3",
+"title": "burning heart",
+"genre": "short",
+"dur": 118.3,
+"credit": "音楽：魔王魂",
+"url": "https://maou.audio/all/"
+},
+{
+"f": "maou_short_14_shining_star.mp3",
+"title": "shining star",
+"genre": "short",
+"dur": 94.4,
+"credit": "音楽：魔王魂",
+"url": "https://maou.audio/all/"
+},
+{
+"f": "dova_nine_jack.mp3",
+"title": "Nine Jack",
+"genre": "other",
+"dur": 110.3,
+"credit": "音楽：まんぼう二等兵 (DOVA-SYNDROME)",
+"url": "https://dova-s.jp/"
+},
+{
+"f": "amacha_retrogamecenter.mp3",
+"title": "レトロゲームセンター",
+"genre": "8bit",
+"dur": 120.5,
+"credit": "音楽：甘茶の音楽工房",
+"url": "https://amachamusic.chagasi.com/"
 }
 ]
 }

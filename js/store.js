@@ -1,5 +1,6 @@
 // 個人データはすべてこの端末の localStorage に保存する。
 import { newLearner } from './srs.js';
+import { newLists, normalizeLists, syncSaved } from './lists.js';
 
 const KEY = 'tatetan.v2';
 const OLD_KEYS = ['tatetan.v1']; // 旧版の学習データはテスト用なので引き継がない(設定だけ移す)
@@ -27,6 +28,7 @@ export function freshState() {
     learners: { en: newLearner(0.1), kb: newLearner(0.1) },
     recs: {},
     saved: {},
+    lists: newLists(),
     hidden: {},
     history: [],
     base: [],
@@ -43,13 +45,16 @@ function normalize(data) {
   for (const [lang, L] of Object.entries(data.learners || {})) learners[lang] = { ...newLearner(L.theta ?? 0.1), ...L };
   // 旧版の「確認済み」は暗記済みへまとめた
   for (const rec of Object.values(data.recs || {})) if (rec && rec.st === 'known') rec.st = 'mastered';
-  return {
+  const st = {
     ...base,
     ...data,
     settings: { ...base.settings, ...(data.settings || {}) },
     learners,
     sessions: data.sessions || [],
+    lists: normalizeLists(data),
   };
+  syncSaved(st);
+  return st;
 }
 
 export function createStore() {

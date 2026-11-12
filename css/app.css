@@ -190,6 +190,31 @@ h1, h2, h3, p { margin: 0; }
 .st-t-learning { color: #ffb74d; }
 .st-t-mastered { color: #64b5f6; }
 
+/* 一覧の行 + 右の保存ボタン */
+.witem { display: flex; align-items: center; }
+.witem .wrow { flex: 1; min-width: 0; }
+.wsave { color: var(--tx-2); }
+.wsave.on { color: var(--tx); }
+
+/* 保存リスト */
+.av-empty { background: var(--bg-3); }
+.llist { display: flex; flex-direction: column; gap: 4px; }
+.lcard { display: flex; width: 100%; align-items: center; gap: 12px; padding: 8px 4px; text-align: left; border-radius: 10px; }
+.lcard:active { background: var(--hover); }
+.lthumb { position: relative; flex: none; display: flex; width: 120px; height: 68px; align-items: center; justify-content: center; padding: 0 8px; overflow: hidden; color: #fff; border-radius: 8px; box-shadow: 0 -4px 0 -2px rgba(255, 255, 255, 0.25); }
+.lthumb b { overflow: hidden; font-size: 15px; font-weight: 700; white-space: nowrap; text-overflow: ellipsis; }
+.lcount { position: absolute; right: 4px; bottom: 4px; display: flex; align-items: center; gap: 2px; padding: 1px 4px; font-size: 11px; background: rgba(0, 0, 0, 0.6); border-radius: 4px; }
+.lword { padding: 4px 4px 8px; font-size: 16px; font-weight: 700; }
+.lword small { margin-left: 8px; font-size: 12px; font-weight: 400; color: var(--tx-2); }
+.lrow { display: flex; width: 100%; align-items: center; gap: 16px; min-height: 52px; padding: 6px 12px; text-align: left; border-radius: 10px; }
+.lrow:active { background: var(--hover); }
+.lcheck { flex: none; display: flex; width: 22px; height: 22px; align-items: center; justify-content: center; border: 2px solid var(--tx-2); border-radius: 4px; }
+.lrow[aria-pressed='true'] .lcheck { color: #0f0f0f; background: #f1f1f1; border-color: #f1f1f1; }
+.lnew { display: flex; gap: 8px; padding: 8px 4px; }
+.lname { flex: 1; min-width: 0; height: 40px; padding: 0 12px; font: inherit; font-size: 16px; color: var(--tx); background: var(--bg-3); border: 1px solid var(--line); border-radius: 8px; outline: 0; }
+.lname:focus { border-color: var(--tx-2); }
+@media (hover: hover) { .lcard:hover, .lrow:hover { background: var(--hover); } }
+
 .rows { margin-top: 12px; }
 .row { display: flex; width: 100%; align-items: center; gap: 16px; min-height: 48px; padding: 8px 12px; text-align: left; border-radius: 10px; }
 .row:active { background: var(--hover); }
@@ -268,7 +293,7 @@ h1, h2, h3, p { margin: 0; }
 .pair-btn { width: 100%; text-align: left; }
 
 .more-credit { display: grid; gap: 8px; margin-top: 8px; padding: 12px; border-top: 1px solid var(--line); }
-.more-credit a { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--tx-2); }
+.more-credit a, .more-credit p { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--tx-2); }
 
 /* ---------- スナックバー ---------- */
 .snack { position: fixed; left: 12px; right: 12px; bottom: calc(var(--tab) + 12px + env(safe-area-inset-bottom)); z-index: 30; display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; padding: 8px 16px; font-size: 14px; color: #0f0f0f; background: #f1f1f1; border-radius: 8px; opacity: 0; transform: translateY(8px); pointer-events: none; transition: opacity 0.15s, transform 0.15s; }
@@ -365,6 +390,12 @@ h1, h2, h3, p { margin: 0; }
 }
 
 /* ホーム画面への追加の案内 */
+.ig-for { margin-top: 20px; font-size: 13px; font-weight: 700; color: var(--tx-2); }
+.ig-warn { margin-top: 8px; padding: 10px 12px; border-radius: 8px; background: rgba(255, 255, 255, 0.08); line-height: 1.5; }
+.ig-warn b { color: var(--yellow); }
+.ig-for + .ig-steps { margin-top: 8px; }
+.ig-g { display: inline-block; width: 1.25em; height: 1.25em; vertical-align: -0.3em; padding: 1px; border: 1px solid var(--tx-2); border-radius: 4px; }
+.ig-copy { display: flex; width: fit-content; max-width: 100%; margin-top: 8px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ig-steps { margin: 20px 0 0; padding-left: 22px; display: flex; flex-direction: column; gap: 12px; line-height: 1.5; }
 .ig-steps b { color: var(--yellow); }
 .ig-add { width: 100%; height: 48px; margin-top: 24px; border-radius: 24px; font-size: 16px; }

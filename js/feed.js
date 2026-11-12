@@ -3,6 +3,7 @@
 // 中身と動画要素だけを現在位置の周辺に限って差し替える。
 import { icon } from './icons.js';
 import { ST_LABEL, shownState } from './srs.js';
+import { lastList, addTo } from './lists.js';
 import { newSession, next as pickNextCard, commit, advance, stepBack, markDifficult, isMarked } from './engine.js';
 import { Shuffler } from './media.js';
 import { DEVICE, debugLog } from './device.js';
@@ -59,6 +60,9 @@ export const markExample = (ex) => {
   if (ex.hl) return html.replace(esc(ex.hl), `<mark>${esc(ex.hl)}</mark>`);
   return html;
 };
+
+// 背景映像のクレジット。Pixabay 以外(自作など)は credit に書いてある
+export const videoCredit = (v) => v?.credit || `映像：Pixabay / ${v?.author || ''}`;
 
 const plainExample = (ex) => ex.t.replace(/[{}]/g, '');
 const randomOf = (list) => list[Math.floor(Math.random() * list.length)];
@@ -392,7 +396,7 @@ export function createFeed(app) {
   function tickerText(item) {
     const track = settings().bgmMode === 'continuous' ? bgm.want || item.track : item.track;
     const music = track ? `${esc(track.title)} ・ ${esc(track.credit)}` : '';
-    return `${music} ・ 映像：Pixabay / ${esc(item.video?.author || '')}`;
+    return `${music} ・ ${esc(videoCredit(item.video))}`;
   }
 
   function clear(item) {
@@ -600,12 +604,14 @@ export function createFeed(app) {
     dismissCoach();
   }
 
-  function burst(x, y, kind) {
+  // ダブルタップの演出。YouTube と同じく、タップした所ではなく動画(カード)の真ん中に出す
+  function burst(item, kind) {
     const rect = view.getBoundingClientRect();
+    const box = item.slide.getBoundingClientRect();
     const node = document.createElement('div');
     node.className = `burst burst-${kind}`;
-    node.style.left = `${x - rect.left}px`;
-    node.style.top = `${y - rect.top}px`;
+    node.style.left = `${box.left + box.width / 2 - rect.left}px`;
+    node.style.top = `${box.top + box.height / 2 - rect.top}px`;
     const look = {
       mastered: ['thumbUpFill', '暗記済み'],
       already: ['thumbUpFill', 'もう暗記済み'],
@@ -660,7 +666,7 @@ export function createFeed(app) {
     const now = Date.now();
     if (isMarked(st.recs[w.id])) {
       if (viaDouble) {
-        burst(point.x, point.y, 'already');
+        burst(item, 'already');
         return;
       }
       if (item.snaps.length) {
@@ -681,7 +687,7 @@ export function createFeed(app) {
     store.save();
     updateChrome(item);
     popButton(item);
-    if (viaDouble) burst(point.x, point.y, 'mastered');
+    if (viaDouble) burst(item, 'mastered');
     app.ui.snack('暗記済みにしました', { label: '取り消す', run: () => popSnap(item) });
     dismissCoach();
   }
@@ -707,19 +713,28 @@ export function createFeed(app) {
     updateChrome(item);
   }
 
+  // 保存ボタン: YouTube と同じく、まだ保存していなければ最後に使ったリストへすぐ入れる(「変更」で選び直せる)。
+  // 保存済みなら保存先を選ぶシートを開く(外すのもここから)
   function toggleSave(item) {
     const st = S();
-    const id = item.word.id;
-    if (st.saved[id]) {
-      delete st.saved[id];
-      app.ui.snack('保存を解除しました');
-    } else {
-      st.saved[id] = Date.now();
-      if (imp && imp.item === item) imp.saved = true;
-      app.ui.snack('保存しました', { label: '見る', run: () => app.ui.openPage('saved') });
+    const w = item.word;
+    const chooser = () =>
+      app.ui.openSaveSheet(w, {
+        onChange({ added }) {
+          if (added && imp && imp.item === item) imp.saved = true;
+          updateChrome(item);
+        },
+      });
+    if (st.saved[w.id]) {
+      chooser();
+      return;
     }
+    const l = lastList(st);
+    addTo(st, l.id, w.id);
+    if (imp && imp.item === item) imp.saved = true;
     store.save();
     updateChrome(item);
+    app.ui.snack(`「${l.name}」に保存しました`, { label: '変更', run: chooser });
   }
 
   async function share(item) {

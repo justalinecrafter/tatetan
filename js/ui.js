@@ -2,10 +2,11 @@
 import { icon, logo } from './icons.js';
 import { ST, ST_LABEL, SHOWN_STATES, shownState, retrievability, settled } from './srs.js';
 import { dueCount } from './scheduler.js';
-import { markExample } from './feed.js';
+import { markExample, videoCredit } from './feed.js';
 import { streak, todayKey } from './store.js';
 import { DEVICE } from './device.js';
 import { PWA_ON, storageUsage, clearMedia } from './pwa.js';
+import { DEFAULT_LIST, LIST_NAME_MAX, listById, inList, addTo, removeFrom, createList, renameList, deleteList, listWords } from './lists.js';
 
 const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -224,6 +225,7 @@ export function createUI(app) {
 
     const footer = fromList
       ? `<div class="sheet-foot"><button class="pill pill-w" data-play="${esc(w.id)}">フィードで流す</button>
+         <button class="pill" data-save-detail>${icon(S().saved[w.id] ? 'bookmarkFill' : 'bookmark', 20)}保存</button>
          <button class="pill" data-toggle-hide="${esc(w.id)}">${S().hidden[w.id] ? '再び出す' : '出さない'}</button></div>`
       : '';
 
@@ -248,11 +250,92 @@ export function createUI(app) {
             app.feed.start(target);
             return;
           }
+          if (e.target.closest('[data-save-detail]')) {
+            openSaveSheet(w, { onChange: fromList?.onSaved });
+            return;
+          }
           const hide = e.target.closest('[data-toggle-hide]');
           if (hide) {
             setHidden(w, !S().hidden[w.id]);
             hide.textContent = S().hidden[w.id] ? '再び出す' : '出さない';
           }
+        });
+      },
+    });
+  }
+
+  /* ---------- 保存先(リスト)を選ぶ ---------- */
+  // YouTube の「保存先」と同じ形。チェックを入れ外しするとすぐ反映する。onChange({ added }) で呼び元の表示を直す
+  const nameInput = (value = '') =>
+    `<input class="lname" type="text" maxlength="${LIST_NAME_MAX}" placeholder="リストの名前" value="${esc(value)}" enterkeyhint="done">`;
+
+  function openSaveSheet(word, { onChange } = {}) {
+    const st = S();
+    let creating = false;
+    const html = () => `
+      <p class="lword">${esc(word.w)}<small>${esc(word.m[0])}</small></p>
+      <div class="lists">${st.lists
+        .map((l) => {
+          const on = inList(st, l.id, word.id);
+          return `<button class="lrow" data-list="${esc(l.id)}" aria-pressed="${on}"><span class="lcheck">${on ? icon('check', 18) : ''}</span><span class="row-tx">${esc(l.name)}<small>${Object.keys(l.items).length}語</small></span></button>`;
+        })
+        .join('')}</div>
+      ${creating
+        ? `<form class="lnew">${nameInput()}<button class="pill pill-w" type="submit">作成</button></form>`
+        : `<button class="row" data-new-list><span class="row-ic">${icon('add')}</span><span class="row-tx">新しいリスト</span></button>`}`;
+    openSheet('保存先', html(), {
+      onReady(node) {
+        const body = node.querySelector('.sheet-body');
+        const draw = () => {
+          body.innerHTML = html();
+          if (creating) body.querySelector('.lname').focus();
+        };
+        body.addEventListener('click', (e) => {
+          const r = e.target.closest('[data-list]');
+          if (r) {
+            const l = listById(st, r.dataset.list);
+            const added = !inList(st, l.id, word.id);
+            if (added) addTo(st, l.id, word.id);
+            else removeFrom(st, l.id, word.id);
+            store.save();
+            draw();
+            snack(added ? `「${l.name}」に保存しました` : `「${l.name}」から外しました`);
+            onChange?.({ added });
+            return;
+          }
+          if (e.target.closest('[data-new-list]')) {
+            creating = true;
+            draw();
+          }
+        });
+        body.addEventListener('submit', (e) => {
+          e.preventDefault();
+          const name = body.querySelector('.lname').value.trim();
+          if (!name) return;
+          const l = createList(st, name);
+          addTo(st, l.id, word.id);
+          store.save();
+          creating = false;
+          draw();
+          snack(`「${l.name}」に保存しました`);
+          onChange?.({ added: true });
+        });
+      },
+    });
+  }
+
+  // 名前を入れるだけのシート(新しいリスト・名前の変更)
+  function openNameSheet(title, value, done) {
+    openSheet(title, `<form class="lnew">${nameInput(value)}<button class="pill pill-w" type="submit">${value ? '変更' : '作成'}</button></form>`, {
+      onReady(node) {
+        const input = node.querySelector('.lname');
+        input.focus();
+        node.querySelector('form').addEventListener('submit', (e) => {
+          e.preventDefault();
+          const name = input.value.trim();
+          if (!name) return;
+          closeSheetNow();
+          done(name);
         });
       },
     });
@@ -280,7 +363,11 @@ export function createUI(app) {
       ${row('settings', 'settings', '設定')}
       <div class="more-credit">
         ${track ? `<a href="${esc(track.url)}" target="_blank" rel="noopener">${icon('music', 18)}<span>${esc(track.credit)} (${esc(track.title)})</span></a>` : ''}
-        ${video ? `<a href="${esc(video.url)}" target="_blank" rel="noopener">${icon('link', 18)}<span>映像：Pixabay / ${esc(video.author)}</span></a>` : ''}
+        ${video
+          ? video.url
+            ? `<a href="${esc(video.url)}" target="_blank" rel="noopener">${icon('link', 18)}<span>${esc(videoCredit(video))}</span></a>`
+            : `<p>${icon('link', 18)}<span>${esc(videoCredit(video))}</span></p>`
+          : ''}
       </div>`;
     openSheet('その他', body, {
       onReady(node) {
@@ -381,12 +468,33 @@ export function createUI(app) {
     </button>`;
   }
 
-  function bindRows(root) {
+  // 一覧の 1 行。右に保存ボタン(押すと保存先を選ぶ)
+  function wordItem(w) {
+    const on = !!S().saved[w.id];
+    return `<div class="witem">${wordRow(w)}<button class="icon-btn wsave${on ? ' on' : ''}" data-save="${esc(w.id)}" aria-label="保存">${icon(on ? 'bookmarkFill' : 'bookmark', 22)}</button></div>`;
+  }
+
+  // onSaved: 保存先が変わったあとに一覧ごと描き直したいとき
+  function bindRows(root, onSaved) {
+    const refresh = (w) => {
+      if (onSaved) return onSaved();
+      const on = !!S().saved[w.id];
+      root.querySelectorAll(`[data-save="${CSS.escape(w.id)}"]`).forEach((b) => {
+        b.classList.toggle('on', on);
+        b.innerHTML = icon(on ? 'bookmarkFill' : 'bookmark', 22);
+      });
+    };
     root.addEventListener('click', (e) => {
+      const save = e.target.closest('[data-save]');
+      if (save) {
+        const w = index.byId.get(save.dataset.save);
+        if (w) openSaveSheet(w, { onChange: () => refresh(w) });
+        return;
+      }
       const r = e.target.closest('.wrow');
       if (!r) return;
       const w = index.byId.get(r.dataset.word);
-      if (w) openDetail(w, { fromList: true });
+      if (w) openDetail(w, { fromList: { onSaved: () => refresh(w) } });
     });
   }
 
@@ -416,7 +524,7 @@ export function createUI(app) {
         return w.w.toLowerCase().includes(q) || w.m.some((m) => m.includes(q)) || (w.kanji || '').includes(q);
       });
       countEl.textContent = `${hits.length}語${hits.length > LIST_LIMIT ? `(先頭${LIST_LIMIT}語を表示)` : ''}`;
-      list.innerHTML = hits.length ? hits.slice(0, LIST_LIMIT).map(wordRow).join('') : '<p class="empty">該当する単語はありません</p>';
+      list.innerHTML = hits.length ? hits.slice(0, LIST_LIMIT).map(wordItem).join('') : '<p class="empty">該当する単語はありません</p>';
     };
     draw();
     bindRows(list);
@@ -440,17 +548,78 @@ export function createUI(app) {
     if (opts.focus && window.innerWidth < 768) input.focus();
   }
 
-  function renderSaved() {
+  // 保存: リストの一覧。リストを開くと中の単語が並ぶ
+  function renderSaved(opts = {}) {
     const st = S();
-    const ids = Object.keys(st.saved).sort((a, b) => st.saved[b] - st.saved[a]);
-    const words = ids.map((id) => index.byId.get(id)).filter(Boolean);
-    page.innerHTML = `${pageHead('保存した単語')}
+    const open = opts.list && listById(st, opts.list);
+    if (open) return renderList(open);
+    const card = (l) => {
+      const words = listWords(l).map((id) => index.byId.get(id)).filter(Boolean);
+      const top = words[0];
+      const cls = top ? THUMB(top)[1] : 'av-empty';
+      return `<button class="lcard" data-open-list="${esc(l.id)}">
+        <span class="lthumb ${cls}"><b>${top ? esc(top.w) : ''}</b><span class="lcount">${icon('list', 14)}${words.length}</span></span>
+        <span class="wmain"><b>${esc(l.name)}</b><span class="wmean">${words.length}語</span></span>
+      </button>`;
+    };
+    page.innerHTML = `${pageHead('保存', `<button class="pill" data-new-list>${icon('add', 20)}新しいリスト</button>`)}
+      <div class="page-in">
+        <p class="count">保存ボタンを押すと、最後に使ったリストに入ります</p>
+        <div class="llist">${st.lists.map(card).join('')}</div>
+      </div>`;
+    page.querySelector('[data-new-list]').addEventListener('click', () =>
+      openNameSheet('新しいリスト', '', (name) => {
+        const l = createList(st, name);
+        store.save();
+        renderSaved({ list: l.id });
+      })
+    );
+    page.querySelector('.llist').addEventListener('click', (e) => {
+      const c = e.target.closest('[data-open-list]');
+      if (c) renderSaved({ list: c.dataset.openList });
+    });
+  }
+
+  function renderList(l) {
+    const st = S();
+    const words = listWords(l).map((id) => index.byId.get(id)).filter(Boolean);
+    page.scrollTop = 0;
+    page.innerHTML = `<header class="page-head"><button class="icon-btn" data-to-lists aria-label="リストの一覧へ">${icon('back')}</button><h1>${esc(l.name)}</h1><span class="grow"></span>
+        ${l.id === DEFAULT_LIST ? '' : `<button class="icon-btn" data-list-menu aria-label="リストの操作">${icon('more')}</button>`}</header>
       <div class="page-in">
         <p class="count">${words.length}語</p>
-        ${words.length ? '' : '<p class="empty">右の保存ボタンで残した単語がここに並びます</p>'}
-        <div class="wlist" id="savedList">${words.map(wordRow).join('')}</div>
+        ${words.length ? '' : '<p class="empty">フィードや単語帳の保存ボタンで、このリストに単語を入れられます</p>'}
+        <div class="wlist" id="savedList">${words.map(wordItem).join('')}</div>
       </div>`;
-    bindRows(page.querySelector('#savedList'));
+    const redraw = () => {
+      const now = listById(st, l.id);
+      if (currentPage === 'saved' && now && page.querySelector('[data-to-lists]')) renderList(now);
+    };
+    bindRows(page.querySelector('#savedList'), redraw);
+    page.querySelector('[data-to-lists]').addEventListener('click', () => renderSaved());
+    page.querySelector('[data-list-menu]')?.addEventListener('click', () => {
+      openSheet(l.name, `${row('rename', 'settings', '名前を変える')}${row('delete', 'block', 'リストを削除', '中の単語の学習記録は消えません')}`, {
+        onReady(node) {
+          node.addEventListener('click', (e) => {
+            const r = e.target.closest('[data-row]');
+            if (!r) return;
+            closeSheetNow();
+            if (r.dataset.row === 'rename') {
+              openNameSheet('名前を変える', l.name, (name) => {
+                renameList(st, l.id, name);
+                store.save();
+                redraw();
+              });
+            } else if (confirm(`「${l.name}」を削除しますか?`)) {
+              deleteList(st, l.id);
+              store.save();
+              snack('リストを削除しました');
+              renderSaved();
+            }
+          });
+        },
+      });
+    });
   }
 
   function renderHistory() {
@@ -466,7 +635,7 @@ export function createUI(app) {
     page.innerHTML = `${pageHead('履歴')}
       <div class="page-in">
         ${list.length ? '' : '<p class="empty">まだ何も見ていません</p>'}
-        <div class="wlist" id="histList">${list.map((x) => wordRow(x.w)).join('')}</div>
+        <div class="wlist" id="histList">${list.map((x) => wordItem(x.w)).join('')}</div>
       </div>`;
     bindRows(page.querySelector('#histList'));
   }
@@ -503,7 +672,7 @@ export function createUI(app) {
         ${groups.map(statusLine).join('')}
         <div class="rows">
           ${row('history', 'history', '履歴')}
-          ${row('saved', 'bookmark', '保存した単語')}
+          ${row('saved', 'bookmark', '保存したリスト')}
           ${row('library', 'list', '単語帳')}
           ${row('settings', 'settings', '設定')}
           ${row('credits', 'info', 'クレジット')}
@@ -625,16 +794,31 @@ export function createUI(app) {
   }
 
   function renderCredits() {
-    const videos = manifest.videos
+    const pixabay = manifest.videos.filter((v) => !v.credit);
+    const videos = pixabay
       .map((v) => `<li><a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.author)}</a><small>${esc(v.tags)}</small></li>`)
       .join('');
+    // 音楽は提供元ごとに 1 行(同じ提供元の曲はまとめる)
+    const music = new Map();
+    for (const t of manifest.bgm) {
+      const m = music.get(t.credit) || { url: t.url, titles: [] };
+      m.titles.push(t.title);
+      music.set(t.credit, m);
+    }
+    const musicRows = [...music]
+      .map(([credit, m]) => `<p><a href="${esc(m.url)}" target="_blank" rel="noopener">${esc(credit)}</a>${m.titles.length <= 3 ? ` <small>(${m.titles.map(esc).join('、')})</small>` : ''}</p>`)
+      .join('');
+    const own = new Map();
+    for (const v of manifest.videos) if (v.credit) own.set(v.credit, (own.get(v.credit) || 0) + 1);
+    const ownRows = [...own].map(([credit, n]) => `<p>${esc(credit)}(${n}本)</p>`).join('');
     page.innerHTML = `${pageHead('クレジット')}
       <div class="page-in credits">
         <div class="brand">${logo()}<p>縦型単語フィード</p></div>
         <h3>音楽</h3>
-        <p><a href="https://maou.audio/" target="_blank" rel="noopener">音楽：魔王魂</a></p>
+        ${musicRows}
         <h3>映像</h3>
-        <p>映像：<a href="https://pixabay.com/ja/" target="_blank" rel="noopener">Pixabay</a> の各投稿者(${manifest.videos.length}本)</p>
+        ${ownRows}
+        <p>映像：<a href="https://pixabay.com/ja/" target="_blank" rel="noopener">Pixabay</a> の各投稿者(${pixabay.length}本)</p>
         <ul class="credit-list">${videos}</ul>
         <h3>単語データ</h3>
         <p>英単語・英熟語のリスト、意味・例文はこのアプリのために作成しました。古典の用例は、著作権の切れた古典作品の原文と自作の例文(作例と表示)です。現代語訳は自作です。</p>
@@ -653,6 +837,7 @@ export function createUI(app) {
   return {
     snack,
     openDetail,
+    openSaveSheet,
     openMore,
     openCreate,
     openPage,
