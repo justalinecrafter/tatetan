@@ -1,40 +1,40 @@
-// 記憶モデル。DOM に依存しない純粋関数だけを置く(tests/ から Node で直接検証できる)。
+// 記憶モデル。DOM に依存しない純粋関数だけを置く(シミュレーションから Node で直接検証できる)。
 //
 // 忘却は FSRS 系のべき乗曲線で表す。
 //   R(t) = (1 + F * t / S) ^ C    S: 安定度(R が 0.9 に落ちるまでの日数)
 // 利用者は正誤を入力しないので、滞在時間や答えの表示などの行動から
 // 「思い出せたか(grade)」と「その推定の確からしさ(conf)」を見積もり、conf の分だけ安定度を更新する。
 //
-// 覚えかけの語は「学習枠」に入れ、枚数で刻んだ短い間隔(約4 → 10 → 25枚)で確かめてから卒業(暗記済み)させる。
-// 暗記済みは1つの状態だけ。そのうち安定度が十分に育った語(定着)は、抜き打ちでたまに出すだけにする。
+// 状態は 4 つ。
+//   未出     まだ出ていない語。即スワイプしただけの語も、ほとんど目に入っていないとみなして未出のまま
+//   学習中   覚えている途中。覚えかけは「学習枠」で枚数刻み(約4 → 10 → 25枚)に確かめ、卒業後は日単位で復習する
+//   知ってそう 行動から定着度が高いと推定した語。抜き打ちでたまに出すだけ
+//   暗記済み  利用者が暗記ボタンを押した語だけ。押した数日後に一度確かめ、そのあとは抜き打ちだけ
 // 実力 θ はリスト上の位置(0〜1)で表し、「知っている確率」は θ を中心としたなだらかな坂で持つ。
 // 単語と熟語はリストが別なので、θ と坂の幅もそれぞれに持つ。
 
 export const DAY = 86400000;
+const HOUR = 3600000;
 const F = 19 / 81;
 const C = -0.5;
 
-export const ST = { NEW: 'new', WATCH: 'watch', LEARNING: 'learning', MASTERED: 'mastered' };
-export const ST_LABEL = {
-  new: '未出',
-  watch: '様子見',
-  learning: '学習中',
-  mastered: '暗記済み',
-};
-// 画面に出す状態は3つ。様子見(判断材料が足りない語)は未出として見せる。
-export const SHOWN_STATES = [ST.NEW, ST.LEARNING, ST.MASTERED];
-export const shownState = (rec) => (!rec || rec.st === ST.WATCH || rec.def ? ST.NEW : rec.st);
+export const ST = { NEW: 'new', LEARNING: 'learning', LIKELY: 'likely', MASTERED: 'mastered' };
+export const ST_LABEL = { new: '未出', learning: '学習中', likely: '知ってそう', mastered: '暗記済み' };
+export const SHOWN_STATES = [ST.NEW, ST.LEARNING, ST.LIKELY, ST.MASTERED];
+export const shownState = (rec) => rec?.st || ST.NEW;
+export const isNew = (rec) => !rec || rec.st === ST.NEW;
 
 export const G = { AGAIN: 1, HARD: 2, GOOD: 3, EASY: 4 };
 
-// 次回出題までに許す記憶保持率。定着した語は下がるまで待つので、めったに出ない。
-const TARGET_R = { learning: 0.9, mastered: 0.88, settled: 0.8 };
+// 次回出題までに許す記憶保持率。知ってそう・定着した暗記済みは下がるまで待つので、めったに出ない。
+const TARGET_R = { learning: 0.9, mastered: 0.88, rare: 0.75 };
 export const BOX_GAPS = [4, 10, 25, 40]; // 学習枠の段ごとの間隔(枚)。4段目は間を空けて使う人だけ
-export const MASTER_S = 21; // 定着とみなす安定度(日)
-const MASTER_DAYS = 2; // 定着とみなすのに必要な、成功した日の数(暗記ボタンを押した語)
-const BEHAVIOR_DAYS = 3; // 行動の推定だけで暗記済みになった語は、成功した日をもう1日求める
-const MARK_S = 10; // 答えを見る前に暗記ボタンを押し、別の日にも思い出せた語は、このくらいの安定度で定着とみなす
+export const LIKELY_S = 21; // 学習中の語がこの安定度に育ち、別の日に何度も思い出せたら「知ってそう」
+const LIKELY_DAYS = 3;
+const MARK_S = { 2: 10, 1: 21 }; // 暗記ボタンを押した語が定着とみなされる安定度(答えを見る前に押した: 2 / 見てから: 1)
 const MARK_CHECK = { 2: [2, 4], 1: [1, 3] }; // 暗記ボタンを押した語の最初の確認(日)。押した日のうちは出さない
+export const FAR_PK = 0.97; // 即スワイプを「知っていた」とみなすのは、知っている確率がこれ以上の語(レベルより大幅に易しい語)だけ
+const SKIP_HOLD = [30, 80, 200]; // 未出のまま即スワイプされた語を、次に出せるまでの枚数
 const PARK_FAILS = 4; // 学習枠で何回失敗したら後回しにするか
 const MAX_S = 1500;
 const MIN_S = 0.005;
@@ -59,18 +59,20 @@ export function intervalDays(s, targetR) {
 
 /* ---------- 学習者のモデル(言語ごと) ---------- */
 
-export const newTrack = (theta) => ({
+// lr: θ を動かす速さ(最初の値)。テストのない古典は自己申告だけで始めるので、速めに動かして合わせる
+export const newTrack = (theta, { w = 0.08, lr = 0.06 } = {}) => ({
   theta, // 坂の中心。知っている確率が 50% になる位置
-  w: 0.08, // 坂の幅
+  w, // 坂の幅
+  lr,
   n: 0, // θ を更新した回数
   cal: { z: 1 }, // 坂から遠い語での予測の外れ(見込みどおりなら 1)
 });
 
-export function newLearner(theta = 0.1) {
+export function newLearner(theta = 0.1, opts) {
   return {
-    ...newTrack(theta), // 単語リストの θ・坂
-    p: newTrack(theta), // 熟語リストの θ・坂。最初は単語と同じ位置から始め、行動で合わせていく
-    tested: false,
+    ...newTrack(theta, opts), // 単語リストの θ・坂
+    p: newTrack(theta, opts), // 熟語リストの θ・坂。最初は単語と同じ位置から始め、行動で合わせていく
+    sure: false, // θ があてになるか(テストを受けた・自己申告した・十分に使った)
     box: 8, // 学習枠の大きさ
     boxLog: [], // 学習枠の復習の成否(直近30回)
     ivl: 1, // 復習の間隔の倍率
@@ -78,11 +80,7 @@ export function newLearner(theta = 0.1) {
 }
 
 // 語の種類に応じた θ・坂(単語は学習者そのもの、熟語は L.p)
-export function trackOf(L, word) {
-  if (word.kind !== 'phrase') return L;
-  if (!L.p) L.p = newTrack(L.theta);
-  return L.p;
-}
+export const trackOf = (L, word) => (word.kind === 'phrase' ? L.p : L);
 export const thetaOf = (L, word) => trackOf(L, word).theta;
 
 // 学習者が語を(アプリで覚える前から)知っている確率
@@ -91,12 +89,15 @@ export function pKnown(L, word) {
   return 1 / (1 + Math.exp(-(T.theta - word.d) / T.w));
 }
 
+// 即スワイプを「知っていた」とみなしてよい語か(レベルより大幅に易しく、θ があてになるとき)
+export const farEasy = (L, word) => (L.sure || L.n >= 30) && pKnown(L, word) >= FAR_PK;
+
 // 初めて見た語への反応で θ・坂の幅を更新する。y: 知っていた度合い(0〜1)
 export function updateLearner(L, word, y, weight) {
   if (!weight) return;
   const T = trackOf(L, word);
   const p = pKnown(L, word);
-  const lr = Math.max(0.012, 0.06 / (1 + T.n / 25));
+  const lr = Math.max(0.012, (T.lr || 0.06) / (1 + T.n / 25));
   T.theta = clamp(T.theta + lr * weight * (y - p), -0.05, 1.05);
   T.n++;
   // 坂から遠い語で外れが見込みより多いなら坂をなだらかに、少ないなら急にする。
@@ -124,16 +125,22 @@ export function logBox(L, success) {
   }
 }
 
+// 日単位の復習の成否で、間隔の倍率を調整する(成功率が 86% 前後になるように)
+export function logReview(L, success) {
+  L.ivl = clamp((L.ivl || 1) * (success ? 1.01 : 0.94), 0.4, 2);
+}
+
 /* ---------- 行動の読み取り ---------- */
 
 // 個人の「読む速さ」を基準にする。遅い人を「考え込んだ」と誤判定しないため。
+// quick は「一瞬でスワイプした」とみなす速さ。普段の読む時間の 3 割ほど(読まずに指を動かした速さ)。
 // 長い見出し(熟語)は読むのに時間がかかるので、その分だけ基準を延ばす。
 export function thresholds(baseline, chars = 8) {
   const list = baseline && baseline.length >= 8 ? [...baseline].sort((a, b) => a - b) : null;
   const median = list ? list[list.length >> 1] : 2.2;
   const extra = Math.max(0, chars - 10);
   return {
-    quick: clamp(median * 0.55, 0.6, 1.4) + extra * 0.03,
+    quick: clamp(median * 0.3, 0.4, 0.9) + extra * 0.02,
     think: clamp(median * 1.6, 2.2, 7) + extra * 0.06,
   };
 }
@@ -144,88 +151,90 @@ export function pushBaseline(baseline, sec) {
   return next.length > 60 ? next.slice(-60) : next;
 }
 
-const isFirst = (rec) => !rec || rec.st === ST.WATCH || !!rec.def;
-
-// 暗記済みのうち、別の日に何度も思い出せた語(定着)。抜き打ちでたまに出すだけ。
-// 利用者が暗記ボタンを押した語(mk)は強い証拠として扱い、少ない確認で定着にする。
-//   mk = 2: 答えを見る前に押した  mk = 1: 答えを見てから押した  mkc: 押したあとの最初の確認がまだ
+// 暗記済みのうち、押したあと別の日にも思い出せて、安定度が育った語(定着)。抜き打ちでたまに出すだけ
 export function settled(rec) {
-  if (!rec || rec.st !== ST.MASTERED || rec.im || rec.mkc) return false;
-  const days = rec.okd?.length || 0;
-  if (rec.mk === 2) return rec.s >= MARK_S && days >= MASTER_DAYS;
-  if (rec.mk === 1) return rec.s >= MASTER_S && days >= MASTER_DAYS;
-  return rec.s >= MASTER_S && days >= BEHAVIOR_DAYS;
+  if (!rec || rec.st !== ST.MASTERED || rec.mkc) return false;
+  return rec.s >= MARK_S[rec.mk || 1] && (rec.okd?.length || 0) >= 2;
 }
+
+// たまに抜き打ちで出すだけの語(知ってそう・定着した暗記済み)
+export const rare = (rec) => !!rec && ((rec.st === ST.LIKELY && !rec.lkc) || settled(rec));
 
 // 行動 → 記憶の推定。明示的な暗記・苦手は別経路(memorize / dislike)で処理する。
 //   imp: { frontMs, backMs, revealed, detail, returned, manual, replay, saved, chars, mcount, exlen }
-//   ctx: { baseline, pk, skimming, stretch }
+//   ctx: { baseline, pk, far, stretch, now }
+// kind:
+//   none  何もしない          skip  見ていない扱い(未出なら少し後に回す・既出なら期限を少し延ばす)
+//   hold  判断を保留(未出のまま、少し後にもう一度)   likely  知ってそう   grade  思い出せたか
 // 返す y / w は θ の更新に使う(初めて見た語だけ)。
 export function classify(imp, rec, ctx) {
   const { quick, think } = thresholds(ctx.baseline, imp.chars);
   const f = imp.frontMs / 1000;
   const b = imp.backMs / 1000;
-  const first = isFirst(rec);
-  const pk = first ? ctx.pk : retrievability(rec, ctx.now);
+  const first = isNew(rec);
   // 答えをじっくり読んだか(意味の数・例文の長さで補正)
   const encodeAt = 2.5 + 0.5 * (imp.mcount || 1) + 0.02 * (imp.exlen || 40);
   const encode = b >= encodeAt || !!imp.detail;
   const interest = encode || !!imp.saved;
-  const damp = ctx.skimming ? 0.5 : 1; // 流し見中は推定を弱める
+  const instant = !imp.revealed && f < quick;
 
   if (imp.manual) return { kind: 'none', why: '単語帳から開いた' };
   if (!imp.revealed && f > 30) return { kind: 'none', why: '放置とみなす' };
 
   if (imp.returned) {
     if (imp.revealed) return { kind: 'grade', grade: G.AGAIN, conf: 0.6, why: '戻って答えを確認した' };
-    if (f < quick) return { kind: 'none', why: '通り過ぎただけ' };
-    if (first) return { kind: 'none', why: '戻って見直した' };
+    if (instant || first) return { kind: 'none', why: '戻ってきて通り過ぎた' };
     return { kind: 'grade', grade: G.HARD, conf: 0.3, why: '戻って見直した' };
   }
 
   if (first) {
+    if (instant) {
+      return ctx.far
+        ? { kind: 'likely', s: 10 + 20 * clamp((ctx.pk - FAR_PK) / (1 - FAR_PK), 0, 1), why: 'レベルよりずっと易しいので即スワイプした' }
+        : {
+          kind: 'skip',
+          // 語は未出のまま。ただ、知っている語ほど一瞬で飛ばされやすいので、知っていそうな語(50% 以上)なら θ をわずかに上げる。
+          // そうしないと、知っている語の証拠だけが抜け落ちて θ が低めに偏る
+          y: 1,
+          w: ctx.pk >= 0.5 ? 0.15 : 0,
+          why: '一瞬でスワイプした(ほとんど見ていない)',
+        };
+    }
     let ev;
     if (imp.revealed) {
-      if (b < 0.9 && f >= quick) {
-        ev = pk >= 0.7
-          ? { kind: 'grade', grade: G.GOOD, conf: 0.5, implied: true, y: 0.8, w: 0.3, why: '答えを一瞬確認しただけ' }
-          : { kind: 'grade', grade: G.HARD, conf: 0.5, y: 0.4, w: 0.3, why: '答えをちらっと見た' };
+      if (b < 0.9) {
+        ev = ctx.pk >= 0.7
+          ? { kind: 'likely', s: 2 + 4 * ctx.pk, confirm: true, y: 0.8, w: 0.3, why: '答えを一瞬確認しただけ' }
+          : { kind: 'grade', grade: G.HARD, y: 0.4, w: 0.3, why: '答えをちらっと見た' };
       } else if (f >= think) {
-        ev = { kind: 'grade', grade: G.AGAIN, conf: 0.8, y: 0, w: 0.5, encode: true, why: '考えて思い出せなかった' };
+        ev = { kind: 'grade', grade: G.AGAIN, y: 0, w: 0.5, encode: true, why: '考えて思い出せなかった' };
       } else {
-        ev = { kind: 'grade', grade: G.AGAIN, conf: 0.7, y: 0, w: 0.5, encode, why: 'すぐ答えを見た' };
+        ev = { kind: 'grade', grade: G.AGAIN, y: 0, w: 0.5, encode, why: 'すぐ答えを見た' };
       }
-    } else if (f < quick) {
-      ev = pk >= 0.8 && !ctx.skimming
-        ? { kind: 'grade', grade: G.GOOD, conf: 0.5, implied: true, y: 1, w: 0.4, why: '簡単なのですぐ飛ばした' }
-        : { kind: 'watch', gap: pk <= 0.35 ? 15 : 35, y: 0.75, w: ctx.skimming ? 0 : 0.3, why: '知っているか不明なまま飛ばした' };
-    } else if (f < think) {
-      // 答えを見ずに読み進めた = 知っていた可能性が高い。知らなかった語(答えを見た)と同じ重みで θ に効かせる
-      ev = pk >= 0.6
-        ? { kind: 'grade', grade: G.GOOD, conf: 0.55 * damp, implied: true, y: 1, w: 0.5, why: '読んで答えを見ずに進んだ' }
-        : { kind: 'watch', gap: 20, y: 0.9, w: 0.5, why: '読んだが判断材料が足りない' };
-    } else {
-      ev = { kind: 'watch', gap: 10, why: '長く見たが答えを見なかった' };
+      // 背伸びの語は、知らなくても関心がなければ未出に戻す(前線が届いてから普通に出す)
+      if (ctx.stretch && ev.kind === 'grade' && !interest) ev = { kind: 'hold', gap: 60, y: ev.y, w: ev.w, why: `${ev.why}(背伸びの語なので後回し)` };
+      return ev;
     }
-    if (ev.w) ev.w *= damp;
-    // 背伸びの語は、知らなくても関心がなければ学習枠に入れない(前線が届いてから普通に出す)
-    if (ctx.stretch && ev.kind === 'grade' && !ev.implied && !interest && !imp.disliked) {
-      ev = { ...ev, kind: 'watch', defer: true, why: `${ev.why}(背伸びの語なので後回し)` };
+    if (f < think) {
+      // 答えを見ずに読み進めた = 知っていた可能性が高い。2回目なら(前にも読んで進んだ)知ってそうにする
+      return ctx.pk >= 0.6 || rec?.seen
+        ? { kind: 'likely', s: 2 + 6 * ctx.pk, confirm: true, y: 1, w: 0.5, why: '読んで答えを見ずに進んだ' }
+        : { kind: 'hold', gap: 20, y: 0.9, w: 0.5, why: '読んだが判断材料が足りない' };
     }
-    return ev;
+    return { kind: 'hold', gap: 10, why: '長く見たが答えを見なかった' };
   }
 
   // 2 回目以降
+  if (instant) {
+    return ctx.far
+      ? { kind: 'grade', grade: G.GOOD, conf: 0.3, why: 'レベルよりずっと易しいので即スワイプした' }
+      : { kind: 'skip', why: '一瞬でスワイプした(判断しない)' };
+  }
   let ev;
   if (imp.revealed) {
     if (b < 0.9 && f < think) ev = { kind: 'grade', grade: G.HARD, conf: 0.5, why: '合っているか確認した' };
     else if (f >= think || encode) ev = { kind: 'grade', grade: G.AGAIN, conf: 0.75, lapse: true, why: '思い出せず答えを読んだ' };
-    else ev = { kind: 'grade', grade: G.HARD, conf: 0.55, weak: true, why: '少し迷って答えを見た' };
-  } else if (f < quick) {
-    const settled = rec.ok > 0 || rec.s >= 1;
-    ev = settled
-      ? { kind: 'grade', grade: G.GOOD, conf: 0.4, why: '見てすぐ飛ばした' }
-      : { kind: 'grade', grade: G.HARD, conf: 0.25, why: '覚えたてなのに即飛ばした' };
+    else ev = { kind: 'grade', grade: G.HARD, conf: 0.55, why: '少し迷って答えを見た' };
   } else if (f < think) {
     const faster = rec.fm && imp.frontMs < rec.fm * 0.7 && rec.s >= 1;
     ev = faster
@@ -236,7 +245,6 @@ export function classify(imp, rec, ctx) {
   }
   // 音声を聞き直した = まだ少し怪しい
   if (imp.replay && ev.grade >= G.GOOD) ev = { ...ev, grade: G.GOOD, conf: ev.conf * 0.7, why: `${ev.why}(音声を聞き直した)` };
-  ev.conf *= damp;
   return ev;
 }
 
@@ -270,12 +278,13 @@ function touch(rec, ctx) {
   return rec;
 }
 
-function blank(ctx, word) {
-  return { st: ST.WATCH, s: MIN_S, d: initialDifficulty(ctx, word), n: 0, ok: 0, lapse: 0, watch: 0, box: null, fail: 0, okd: [] };
+// 初めて記録を作るとき。未出の語の記録(飛ばした回数など)は引き継ぐ
+function start(rec, ctx, word) {
+  return { st: ST.NEW, s: MIN_S, d: initialDifficulty(ctx, word), n: 0, ok: 0, lapse: 0, fail: 0, okd: [], box: null, skip: rec?.skip || 0, seen: rec?.seen || 0 };
 }
 
 function copy(rec, ctx, word) {
-  return rec ? { ...rec, okd: [...(rec.okd || [])] } : blank(ctx, word);
+  return isNew(rec) ? start(rec, ctx, word) : { ...rec, okd: [...(rec.okd || [])] };
 }
 
 function addOkDay(rec, now) {
@@ -288,64 +297,85 @@ function enterBox(rec, stage, ctx) {
   rec.st = ST.LEARNING;
   rec.box = stage;
   delete rec.park;
-  delete rec.def;
+  delete rec.mk;
+  delete rec.mkc;
+  delete rec.lkc;
   rec.dueCard = ctx.card + jitter(BOX_GAPS[stage - 1], rng);
-  rec.due = ctx.now + 4 * 3600000; // 利用が途切れたら、次に来たときに出す
+  rec.due = ctx.now + 4 * HOUR; // 利用が途切れたら、次に来たときに出す
 }
 
-// ivl: その人に合わせた間隔の倍率(復習の成功率が 86% 前後になるように調整される)
+// 日単位の次の出番。ivl: その人に合わせた間隔の倍率
 function scheduleDays(rec, ctx) {
   rec.box = null;
   rec.dueCard = null;
-  const target = settled(rec) ? TARGET_R.settled : TARGET_R[rec.st] || 0.9;
+  const target = rare(rec) ? TARGET_R.rare : TARGET_R[rec.st] || 0.9;
   rec.due = ctx.now + intervalDays(rec.s, target) * (ctx.ivl || 1) * DAY;
 }
 
-// 暗記済みの語を、間を空けて復習した結果で間隔の倍率を調整する
-export function logReview(L, success) {
-  L.ivl = clamp((L.ivl || 1) * (success ? 1.01 : 0.94), 0.4, 2);
+// 最初の確認を数日後に寄せる(押した日・推定した日のうちには出さない。遠すぎる場合も一度確かめる)
+function confirmIn(rec, [lo, hi], ctx) {
+  const days = clamp((rec.due - ctx.now) / DAY, lo, hi) * (0.9 + 0.2 * (ctx.rng || Math.random)());
+  rec.due = ctx.now + days * DAY;
+}
+
+// 学習中の語が十分に定着したら「知ってそう」へ(暗記済みにはしない)
+function promote(rec) {
+  if (rec.st === ST.LEARNING && rec.box == null && !rec.park && rec.s >= LIKELY_S && rec.okd.length >= LIKELY_DAYS) {
+    rec.st = ST.LIKELY;
+    return true;
+  }
+  return false;
 }
 
 // classify の結果を単語の記録へ反映する。
-//   ctx: { now, card, theta, pk, stages(3 か 4), frontier, rng }
-//   返り値: { rec, fx }  fx は演出の種類('graduate' | null)
+//   ctx: { now, card, theta, pk, stages(3 か 4), frontier, ivl, rng }
+//   返り値: { rec, fx }  fx は演出の種類('likely': 学習中から知ってそうへ育った | null)
 export function apply(rec, ev, word, ctx) {
   if (ev.kind === 'none') return { rec, fx: null };
   const rng = ctx.rng || Math.random;
-  const next = copy(rec, ctx, word);
-  const wasFirst = isFirst(rec);
-  touch(next, ctx);
+  const first = isNew(rec);
 
-  if (ev.kind === 'watch') {
-    next.st = ST.WATCH;
-    next.box = null;
-    if (ev.defer) {
-      // 普通の新出に戻す。前線が届いたらまた出る
-      next.def = 1;
-      next.dueCard = null;
-      next.due = null;
+  if (ev.kind === 'skip') {
+    if (first) {
+      // 未出のまま。飛ばすたびに次に出せるまでを長くする
+      const next = { ...start(rec, ctx, word) };
+      next.skip++;
+      next.hold = ctx.card + jitter(SKIP_HOLD[Math.min(next.skip, SKIP_HOLD.length) - 1], rng);
       return { rec: next, fx: null };
     }
-    delete next.def;
-    next.watch = (next.watch || 0) + 1;
-    // 何度も即飛ばしされる語は興味が薄いので間隔を倍々に広げる
-    const gap = ev.gap * Math.pow(2, next.watch - 1);
-    next.dueCard = ctx.card + jitter(gap, rng);
-    next.due = ctx.now + Math.min(gap * 0.02, 2) * DAY;
+    // 既出の語: 記録は変えず、少しあとにもう一度
+    const next = { ...rec, lastCard: ctx.card };
+    if (next.box != null) next.dueCard = ctx.card + jitter(BOX_GAPS[next.box - 1], rng);
+    else next.due = ctx.now + Math.max(6 * HOUR, 0.25 * Math.max(0, (rec.due ?? ctx.now) - rec.last));
+    return { rec: next, fx: null };
+  }
+
+  if (ev.kind === 'hold') {
+    const next = { ...start(rec, ctx, word) };
+    next.seen++;
+    next.hold = ctx.card + jitter(ev.gap * Math.pow(2, next.seen - 1), rng);
+    return { rec: next, fx: null };
+  }
+
+  const next = copy(rec, ctx, word);
+  touch(next, ctx);
+  delete next.hold;
+
+  if (ev.kind === 'likely') {
+    next.st = ST.LIKELY;
+    next.s = ev.s;
+    next.ok++;
+    addOkDay(next, ctx.now);
+    if (ev.confirm) next.lkc = 1; // 推定の確かめがまだ(数日後に一度出す)
+    scheduleDays(next, ctx);
+    if (ev.confirm) confirmIn(next, [1, 3], ctx);
     return { rec: next, fx: null };
   }
 
   const stages = ctx.stages || 3;
-  let fx = null;
 
-  if (wasFirst) {
-    delete next.def;
-    if (ev.implied) {
-      next.st = ST.MASTERED;
-      next.im = true;
-      next.s = 2 + 6 * (ctx.pk ?? 0.8);
-      scheduleDays(next, ctx);
-    } else if (ev.grade === G.AGAIN) {
+  if (first) {
+    if (ev.grade === G.AGAIN) {
       next.s = ev.encode ? 0.02 : 0.01;
       enterBox(next, 1, ctx);
     } else if (ev.grade === G.HARD) {
@@ -355,41 +385,32 @@ export function apply(rec, ev, word, ctx) {
       next.s = 0.5;
       enterBox(next, stages, ctx);
     }
-    return { rec: next, fx };
+    return { rec: next, fx: null };
   }
 
   // 2 回目以降
   const R = retrievability(rec, ctx.now);
+  const conf = ev.conf ?? 0.6;
   const target = ev.grade === G.AGAIN ? lapsedS(rec, R) : grownS(rec, R, ev.grade);
-  next.s = clamp(blendS(rec.s, target, ev.conf), MIN_S, MAX_S);
-  next.d = clamp(rec.d - 0.6 * (ev.grade - 3) * ev.conf, 1, 10);
+  next.s = clamp(blendS(rec.s, target, conf), MIN_S, MAX_S);
+  next.d = clamp(rec.d - 0.6 * (ev.grade - 3) * conf, 1, 10);
   next.d = 0.95 * next.d + 0.05 * initialDifficulty(ctx, word);
   const success = ev.grade >= G.GOOD;
+  const gapped = ctx.now - rec.last > 12 * HOUR; // 別の利用(間が空いた)での結果か
   if (success) {
-    next.ok = (next.ok || 0) + 1;
+    next.ok++;
     addOkDay(next, ctx.now);
-    next.im = false; // 推定だけで上がった語も、復習で成功すれば裏が取れた
-  }
-  // 暗記ボタンを押した語の確認。忘れていたら、押したことを証拠として使うのをやめる
-  if (ev.grade === G.AGAIN) {
-    delete next.mk;
-    delete next.mkc;
-  } else if (rec.mkc && ctx.now - rec.last >= 12 * 3600000) {
-    delete next.mkc; // 別の日に確かめられた
-    if (!success && next.mk === 2) next.mk = 1; // 迷ったなら、答えを見てから押したのと同じ扱いに
   }
   if (ev.lapse) next.lapse = (next.lapse || 0) + 1;
 
+  // 学習枠
   if (next.box != null) {
-    // 間が空いた(別の利用の)あとで思い出せたなら、それ以上の確認はいらない
-    const gapped = ctx.now - rec.last > 12 * 3600000;
     if (success) {
+      // 間が空いたあとで思い出せたなら、それ以上の確認はいらない
       if (next.box >= stages || gapped) {
-        next.st = ST.MASTERED;
         next.s = Math.max(next.s, 0.6); // 翌日の利用で確かめる
         next.fail = 0;
         scheduleDays(next, ctx);
-        fx = 'graduate';
       } else enterBox(next, next.box + 1, ctx);
     } else if (ev.grade === G.HARD) {
       enterBox(next, next.box, ctx);
@@ -398,65 +419,73 @@ export function apply(rec, ev, word, ctx) {
       if (!gapped) next.fail = (next.fail || 0) + 1;
       if (next.fail >= PARK_FAILS) {
         // つまずいた語は後回し。3日後か、前線が少し進んでから出し直す
-        next.st = ST.LEARNING;
         next.box = null;
         next.dueCard = null;
         next.due = ctx.now + 3 * DAY;
         next.park = { at: (ctx.frontier ?? 0) + 0.05 };
       } else enterBox(next, 1, ctx);
     }
-    return { rec: next, fx };
+    return { rec: next, fx: null };
   }
 
   if (next.park) {
     // 後回しにしていた語。思い出せたら枠の途中から、だめなら最初から
     next.fail = 0;
     enterBox(next, success ? 2 : 1, ctx);
-    return { rec: next, fx };
+    return { rec: next, fx: null };
   }
 
+  // 日単位の復習(学習中・知ってそう・暗記済み)
   if (ev.grade === G.AGAIN) {
-    // 定着していた語の1回のど忘れは、学習枠へ戻さず間隔を縮めるだけ
     if (settled(rec)) {
+      // 定着していた暗記済みの1回のど忘れは、学習枠へ戻さず間隔を縮めるだけ
       next.s = Math.max(next.s, 0.5);
       scheduleDays(next, ctx);
     } else {
+      // 知ってそう・暗記済みでも、忘れていたら学習中に戻す
       next.fail = 0;
       enterBox(next, 1, ctx);
     }
-    return { rec: next, fx };
+    return { rec: next, fx: null };
   }
-  if (next.st === ST.LEARNING) next.st = ST.MASTERED;
+
+  // 確かめの出番を、別の日に通過した
+  if (gapped && next.mkc) {
+    delete next.mkc;
+    if (!success && next.mk === 2) next.mk = 1; // 迷ったなら、答えを見てから押したのと同じ扱いに
+  }
+  if (gapped && next.lkc) {
+    delete next.lkc;
+    if (!success) next.st = ST.LEARNING; // 迷ったなら、知ってそうではなく学習中として復習する
+  }
+  const fx = promote(next) ? 'likely' : null;
   scheduleDays(next, ctx);
   return { rec: next, fx };
 }
 
-// 利用者が「暗記」を押した(未出・学習中・推定の暗記済み → 暗記済み)。答えを見ずに押したなら本当に知っていたとみなす。
+// 利用者が「暗記」を押した(未出・学習中・知ってそう → 暗記済み)。答えを見ずに押したなら本当に知っていたとみなす。
 export function memorize(rec, imp, word, ctx) {
   const next = copy(rec, ctx, word);
-  const wasFirst = isFirst(rec);
+  const first = isNew(rec);
   touch(next, ctx);
-  if (wasFirst) {
+  delete next.hold;
+  if (first) {
     next.s = imp.revealed ? 1 : 3 + 7 * (ctx.pk ?? 0.5);
   } else {
     const R = retrievability(rec, ctx.now);
     next.s = Math.max(1, grownS(next, R, imp.revealed ? G.GOOD : G.EASY));
   }
   next.d = clamp(next.d - 0.4, 1, 10);
-  next.ok = (next.ok || 0) + 1;
+  next.ok++;
   addOkDay(next, ctx.now);
   next.st = ST.MASTERED;
-  next.im = false;
   next.fail = 0;
   next.mk = Math.max(next.mk || 0, imp.revealed ? 1 : 2);
   next.mkc = 1;
+  delete next.lkc;
   delete next.park;
-  delete next.def;
   scheduleDays(next, ctx);
-  // 最初の確認は数日後に寄せる(押した日のうちには出さない。遠すぎる場合も数日後に一度確かめる)
-  const [lo, hi] = MARK_CHECK[next.mk];
-  const days = clamp((next.due - ctx.now) / DAY, lo, hi) * (0.9 + 0.2 * (ctx.rng || Math.random)());
-  next.due = ctx.now + days * DAY;
+  confirmIn(next, MARK_CHECK[next.mk], ctx);
   return next;
 }
 
@@ -464,10 +493,7 @@ export function memorize(rec, imp, word, ctx) {
 export function unmark(rec, ctx) {
   const next = { ...rec, okd: [...(rec.okd || [])] };
   next.s = Math.min(next.s, 0.5);
-  next.im = false;
   next.fail = 0;
-  delete next.mk;
-  delete next.mkc;
   enterBox(next, 2, ctx);
   return next;
 }
@@ -475,15 +501,13 @@ export function unmark(rec, ctx) {
 // 利用者が「苦手」を押した。学習枠の最初の段へ入れる(枠が満杯でも入れる)。
 export function dislike(rec, word, ctx) {
   const next = copy(rec, ctx, word);
-  const wasFirst = isFirst(rec);
+  const first = isNew(rec);
   touch(next, ctx);
-  next.s = wasFirst ? 0.01 : lapsedS(next, retrievability(rec, ctx.now));
+  delete next.hold;
+  next.s = first ? 0.01 : lapsedS(next, retrievability(rec, ctx.now));
   next.d = clamp(next.d + 1, 1, 10);
-  if (!wasFirst) next.lapse = (next.lapse || 0) + 1;
-  next.im = false;
+  if (!first) next.lapse = (next.lapse || 0) + 1;
   next.fail = 0;
-  delete next.mk;
-  delete next.mkc;
   enterBox(next, 1, ctx);
   return next;
 }

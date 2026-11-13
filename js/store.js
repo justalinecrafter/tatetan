@@ -2,8 +2,9 @@
 import { newLearner } from './srs.js';
 import { newLists, normalizeLists, syncSaved } from './lists.js';
 
-const KEY = 'tatetan.v2';
-const OLD_KEYS = ['tatetan.v1']; // 旧版の学習データはテスト用なので引き継がない(設定だけ移す)
+const KEY = 'tatetan.v3';
+// 出題の仕組みを作り変えたので、旧版の学習記録は引き継がない(設定と保存リストだけ移す)
+const OLD_KEYS = ['tatetan.v2', 'tatetan.v1'];
 
 export const DEFAULT_SETTINGS = {
   scope: 'en', // en | kb | both
@@ -20,8 +21,9 @@ export const DEFAULT_SETTINGS = {
 
 export function freshState() {
   return {
-    v: 2,
+    v: 3,
     onboarded: false,
+    levels: { en: null, kb: null }, // 最初に申告したレベル
     coached: false,
     settings: { ...DEFAULT_SETTINGS },
     // 言語ごとの学習者モデル。θ は単語リスト上の位置(0〜1)。テストを受けるまでは最初のほうから
@@ -40,11 +42,7 @@ export function freshState() {
 
 function normalize(data) {
   const base = freshState();
-  const learners = { ...base.learners };
-  // 熟語の θ を持たない旧版の記録は、単語の θ から始める
-  for (const [lang, L] of Object.entries(data.learners || {})) learners[lang] = { ...newLearner(L.theta ?? 0.1), ...L };
-  // 旧版の「確認済み」は暗記済みへまとめた
-  for (const rec of Object.values(data.recs || {})) if (rec && rec.st === 'known') rec.st = 'mastered';
+  const learners = { ...base.learners, ...(data.learners || {}) };
   const st = {
     ...base,
     ...data,
@@ -66,11 +64,19 @@ export function createStore() {
     const raw = localStorage.getItem(KEY);
     if (raw) state = normalize(JSON.parse(raw));
     else {
+      let moved = false;
       for (const k of OLD_KEYS) {
         const old = localStorage.getItem(k);
         if (!old) continue;
-        const parsed = JSON.parse(old);
-        if (parsed.settings) state.settings = { ...state.settings, ...parsed.settings };
+        if (!moved) {
+          moved = true;
+          const parsed = JSON.parse(old);
+          if (parsed.settings) state.settings = { ...state.settings, ...parsed.settings };
+          if (parsed.lists || parsed.saved) {
+            state.lists = normalizeLists(parsed);
+            syncSaved(state);
+          }
+        }
         localStorage.removeItem(k);
       }
     }
@@ -115,7 +121,7 @@ export function createStore() {
       const parsed = JSON.parse(text);
       const data = parsed.data || parsed;
       if (typeof data !== 'object' || !data.recs) throw new Error('縦単のバックアップではありません');
-      if (data.v !== 2) throw new Error('古い形式のバックアップは読み込めません');
+      if (data.v !== 3) throw new Error('古い形式のバックアップは読み込めません');
       state = normalize(data);
       flush();
     },

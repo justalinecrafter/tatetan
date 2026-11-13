@@ -2,8 +2,9 @@
 //
 // 前線方式: 単語リスト・熟語リストをそれぞれ易しい順の1本の道とみなし、新しい語は「知っているか怪しくなり始めるところ」から
 // 易しい順に出す。覚えかけの語は学習枠(既定8語)に入れ、枠が空くまで次の新しい語は出さない。
-// その合間に、長期の復習・易しい語の確認・背伸びの語・定着した語の抜き打ちを混ぜる。
-import { ST, DAY, BOX_GAPS, retrievability, isDue, overdue, pKnown, settled } from './srs.js';
+// その合間に、日単位の復習・易しい語の確認・背伸びの語・抜き打ち(知ってそう・定着した暗記済み)を混ぜる。
+// 即スワイプされた未出の語は、しばらく出さず(hold)、新しい語の窓の中でも選ばれにくくする。
+import { DAY, BOX_GAPS, retrievability, isDue, overdue, pKnown, rare, isNew } from './srs.js';
 
 const RECENT_LIMIT = 6; // 同じ語を続けない
 const SESSION_CAP = 4; // 1 回の利用で同じ語を流す上限
@@ -75,9 +76,9 @@ export function summarizeHabits(days, sessions, now) {
 // 学習枠の段の数。2〜3日おきに使う人は、卒業前にもう1段確かめる
 export const boxStages = (habit) => (habit && habit.gapDays >= 2 ? 4 : 3);
 
-// 新しい語の窓。fresh は易しい順に並んだ未出の単語。
+// 新しい語の窓。fresh は易しい順に並んだ未出の単語。何度も即スワイプされた語は選ばれにくくする。
 //   返り値: { items: [{ w, wt }], frontier, easy: [易しい側の未出語] }
-export function frontierWindow(fresh, L) {
+export function frontierWindow(fresh, L, recs = {}) {
   const items = [];
   const easy = [];
   let started = false;
@@ -91,7 +92,7 @@ export function frontierWindow(fresh, L) {
       continue;
     }
     started = true;
-    const wt = u * Math.exp(-sumU / WINDOW_TAU);
+    const wt = u * Math.exp(-sumU / WINDOW_TAU) * Math.pow(0.5, recs[w.id]?.skip || 0);
     items.push({ w, wt });
     wSum += wt;
     dSum += wt * w.d;
@@ -116,13 +117,13 @@ function collect(ctx, lang) {
   };
   const scan = (w) => {
     const rec = recs[w.id];
-    const unseen = !rec || rec.def;
+    const unseen = isNew(rec);
     if (!hidden[w.id] && rec && rec.box != null) {
       g.boxCount++;
       if (rec.stretch) g.stretchInBox++;
       if (w.head) g.heads.set(w.head, (g.heads.get(w.head) || 0) + 1);
     }
-    if (!hidden[w.id] && rec && !unseen && rec.box == null && !settled(rec) && rec.st !== ST.WATCH && rec.due != null && rec.due < now + DAY) g.upcoming++;
+    if (!hidden[w.id] && !unseen && rec.box == null && !rare(rec) && rec.due != null && rec.due < now + DAY) g.upcoming++;
     if (!hidden[w.id]) {
       if (w.kind === 'phrase') {
         g.totalPhrases++;
@@ -135,6 +136,7 @@ function collect(ctx, lang) {
     if (!ok(w)) return;
     g.loose.push(w);
     if (unseen) {
+      if (rec?.hold > card) return; // 即スワイプした・判断を保留した語は、しばらく出さない
       if (w.kind === 'word') g.freshWords.push(w);
       else g.freshPhrases.push(w);
       return;
@@ -144,7 +146,7 @@ function collect(ctx, lang) {
       if (card >= rec.dueCard || (rec.due != null && now >= rec.due)) g.boxDue.push(w);
       return;
     }
-    if (settled(rec)) {
+    if (rare(rec)) {
       if (now - rec.last >= CHECK_MIN_GAP) g.check.push(w);
       return;
     }
@@ -153,8 +155,8 @@ function collect(ctx, lang) {
       return;
     }
     if (isDue(rec, now, card)) g.review.push(w);
-    // 暗記ボタンを押した語は、決めた日の確認まで前倒しで出さない
-    else if (card - (rec.lastCard ?? -Infinity) >= AHEAD_MIN_CARDS && rec.st !== ST.WATCH && !rec.mkc) g.ahead.push(w);
+    // 暗記ボタンを押した語・知ってそうと推定した語は、決めた日の確認まで前倒しで出さない
+    else if (card - (rec.lastCard ?? -Infinity) >= AHEAD_MIN_CARDS && !rec.mkc && !rec.lkc) g.ahead.push(w);
   };
   for (const w of index.ordered(lang)) scan(w);
   for (const w of index.phrases(lang)) scan(w);
@@ -175,18 +177,19 @@ function collect(ctx, lang) {
   g.freshPhrases = g.freshPhrases.filter((p) => !p.head || (g.heads.get(p.head) || 0) < 2);
 
   // 単語と熟語は別々の道。どちらも同じ前線方式で、窓・易しい語の確認・背伸びを作る
-  const win = frontierWindow(g.freshWords, L);
+  const win = frontierWindow(g.freshWords, L, recs);
   g.window = win.items;
   g.frontier = win.frontier;
   g.easy = win.easy;
-  g.stretch = g.freshWords.filter((w) => !recs[w.id] && w.d >= win.frontier + 0.1 && w.d <= win.frontier + 0.4);
+  const untouched = (w) => !recs[w.id];
+  g.stretch = g.freshWords.filter((w) => untouched(w) && w.d >= win.frontier + 0.1 && w.d <= win.frontier + 0.4);
   g.remWordsAhead = g.freshWords.filter((w) => w.d >= win.frontier - 0.05).length;
 
-  const pwin = frontierWindow(g.freshPhrases, L);
+  const pwin = frontierWindow(g.freshPhrases, L, recs);
   g.pWindow = pwin.items;
   g.pFrontier = pwin.frontier;
   g.pEasy = pwin.easy;
-  g.pStretch = g.freshPhrases.filter((p) => !recs[p.id] && p.d >= pwin.frontier + 0.1 && p.d <= pwin.frontier + 0.4);
+  g.pStretch = g.freshPhrases.filter((p) => untouched(p) && p.d >= pwin.frontier + 0.1 && p.d <= pwin.frontier + 0.4);
   g.remPhrasesAhead = g.freshPhrases.filter((p) => p.d >= pwin.frontier - 0.05).length;
   return g;
 }
@@ -201,8 +204,8 @@ function pickReview(list, ctx) {
     (w) => {
       const rec = recs[w.id];
       const d = w.d ?? 0.5;
-      // 暗記ボタンを押した語の最初の確認は少し優先する
-      return (1 + overdue(rec, now, card)) * (1 + 0.5 * (1 - d)) * (saved[w.id] ? 1.4 : 1) * (1 + 0.2 * (rec.lapse || 0)) * (rec.mkc ? 1.5 : 1);
+      // 暗記ボタンを押した語・知ってそうと推定した語の最初の確認は少し優先する
+      return (1 + overdue(rec, now, card)) * (1 + 0.5 * (1 - d)) * (saved[w.id] ? 1.4 : 1) * (1 + 0.2 * (rec.lapse || 0)) * (rec.mkc || rec.lkc ? 1.5 : 1);
     },
     ctx.rng
   );
@@ -395,7 +398,7 @@ function fallback(ctx, lang) {
     g.loose,
     (w) => {
       const rec = ctx.recs[w.id];
-      return rec && !rec.def ? 1 - retrievability(rec, ctx.now) + 0.02 : 1;
+      return isNew(rec) ? 1 : 1 - retrievability(rec, ctx.now) + 0.02;
     },
     ctx.rng
   );
@@ -427,8 +430,8 @@ export function pickNext(ctx) {
 // 前線の位置(テスト・記録の更新で使う)
 export function frontierOf(index, recs, L, lang, kind = 'word') {
   const list = kind === 'phrase' ? index.phrases(lang) : index.ordered(lang);
-  const fresh = list.filter((w) => !recs[w.id] || recs[w.id].def);
-  return frontierWindow(fresh, L).frontier;
+  const fresh = list.filter((w) => isNew(recs[w.id]));
+  return frontierWindow(fresh, L, recs).frontier;
 }
 
 // 復習待ちの語数(マイページ表示用)
@@ -436,7 +439,7 @@ export function dueCount(words, recs, now, card) {
   let n = 0;
   for (const w of words) {
     const rec = recs[w.id];
-    if (rec && !rec.def && !settled(rec) && rec.st !== ST.WATCH && isDue(rec, now, card)) n++;
+    if (!isNew(rec) && !rare(rec) && isDue(rec, now, card)) n++;
   }
   return n;
 }

@@ -4,7 +4,7 @@
 import { icon } from './icons.js';
 import { ST_LABEL, shownState } from './srs.js';
 import { lastList, addTo } from './lists.js';
-import { newSession, next as pickNextCard, commit, advance, stepBack, markDifficult, isMarked } from './engine.js';
+import { newSession, next as pickNextCard, commit, advance, stepBack, markDifficult, isMarked, wantsNudge } from './engine.js';
 import { Shuffler } from './media.js';
 import { DEVICE, debugLog } from './device.js';
 import { fitAll } from './fit.js';
@@ -333,7 +333,7 @@ export function createFeed(app) {
     return `<button class="act${on ? ' on' : ''}" data-act="${act}" aria-label="${label}"><span class="act-ic">${icon(name, 26)}</span><span class="act-lb">${label}</span></button>`;
   }
 
-  // 暗記ボタンの見た目。利用者が暗記済みにした語だけ点灯する(行動からの推定で暗記済みになった語は押せば確定する)
+  // 暗記ボタンの見た目。利用者が暗記済みにした語だけ点灯する
   function advanceLook(word) {
     return isMarked(S().recs[word.id])
       ? { name: 'thumbUpFill', label: '暗記済み', on: true }
@@ -350,6 +350,11 @@ export function createFeed(app) {
     const kk = kindKey(w);
     const [avText, avClass] = AVATAR[kk];
     const look = advanceLook(w);
+    // 知ってそうの語には、一度だけ暗記ボタンを押すよう声をかける
+    if (item.nudge == null) item.nudge = item.why !== 'manual' && wantsNudge(st.recs[w.id]);
+    const hint = item.nudge
+      ? '<div class="t-hint t-nudge">もう覚えた? ダブルタップで暗記済みに</div>'
+      : st.card < 8 ? '<div class="t-hint">タップで答え / ダブルタップで暗記</div>' : '';
     item.slide.classList.toggle('revealed', item.revealed);
     item.slide.innerHTML = `
       <div class="player">
@@ -367,7 +372,7 @@ export function createFeed(app) {
         <div class="telop">
           <div class="t-front">${frontHtml(item, width)}</div>
           <div class="t-back">${backHtml(item, width)}</div>
-          ${st.card < 8 ? '<div class="t-hint">タップで答え / ダブルタップで暗記</div>' : ''}
+          ${hint}
         </div>
         <div class="meta">
           <div class="ch-row">
@@ -487,16 +492,18 @@ export function createFeed(app) {
       saved: current.saved,
       explicit,
     }, { now, why: current.item.why });
+    // 声をかけた語は、もう声をかけない
+    if (current.item.nudge && S().recs[w.id]) S().recs[w.id].nudged = 1;
     updateChrome(current.item);
-    if (fx === 'graduate') celebrate('graduate', w);
+    if (fx === 'likely') celebrate('likely', w);
     store.save();
   }
 
-  // 学習枠の卒業(学習中 → 暗記済み)を、次のカードの上に短く知らせる
+  // 学習中の語が十分に定着した(学習中 → 知ってそう)ことを、次のカードの上に短く知らせる
   function celebrate(kind, word) {
     const node = document.createElement('div');
     node.className = `cele cele-${kind}`;
-    node.innerHTML = `${icon('school', 22)}<span><b>${esc(word.w)}</b>覚えた!</span>`;
+    node.innerHTML = `${icon('school', 22)}<span><b>${esc(word.w)}</b>定着してきた!</span>`;
     view.append(node);
     node.addEventListener('animationend', () => node.remove(), { once: true });
     setTimeout(() => node.remove(), 2600);

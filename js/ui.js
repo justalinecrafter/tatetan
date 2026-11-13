@@ -1,6 +1,6 @@
 // シート、スナックバー、各ページ。
 import { icon, logo } from './icons.js';
-import { ST, ST_LABEL, SHOWN_STATES, shownState, retrievability, settled } from './srs.js';
+import { ST, ST_LABEL, SHOWN_STATES, shownState, retrievability, settled, isNew } from './srs.js';
 import { dueCount } from './scheduler.js';
 import { markExample, videoCredit } from './feed.js';
 import { streak, todayKey } from './store.js';
@@ -179,27 +179,25 @@ export function createUI(app) {
   function recordLines(word) {
     const rec = S().recs[word.id];
     const shown = shownState(rec);
-    if (!rec || rec.def) return '<div class="pair"><b>状態</b><span>未出</span></div>';
+    if (isNew(rec)) return '<div class="pair"><b>状態</b><span>未出</span></div>';
     const now = Date.now();
     const next = rec.dueCard != null && rec.dueCard > S().card
       ? `あと${rec.dueCard - S().card}枚くらい`
       : rec.due && rec.due > now
         ? humanDuration(rec.due - now)
         : 'もうすぐ';
-    const retain = rec.st === ST.WATCH ? '判定待ち' : `${Math.round(retrievability(rec, now) * 100)}%`;
-    const note = rec.st === ST.WATCH
-      ? '(判断材料を集め中)'
-      : rec.box != null
-        ? `(学習枠 ${rec.box}段目)`
-        : rec.park
-          ? '(いったん後回し)'
-          : rec.im
-            ? '(行動からの推定)'
-            : rec.mkc
-              ? '(数日後に確認)'
-              : settled(rec)
-                ? '(定着)'
-                : '';
+    const retain = `${Math.round(retrievability(rec, now) * 100)}%`;
+    const note = rec.box != null
+      ? `(学習枠 ${rec.box}段目)`
+      : rec.park
+        ? '(いったん後回し)'
+        : rec.mkc || rec.lkc
+          ? '(数日後に確認)'
+          : settled(rec)
+            ? '(定着)'
+            : rec.st === ST.LIKELY
+              ? '(行動からの推定)'
+              : '';
     return `<div class="pair"><b>状態</b><span>${ST_LABEL[shown]}${note}</span></div>
       <div class="pair"><b>見た回数</b><span>${rec.n}回</span></div>
       <div class="pair"><b>記憶の推定</b><span>${retain}</span></div>
@@ -464,7 +462,7 @@ export function createUI(app) {
     return `<button class="wrow" data-word="${esc(w.id)}">
       <span class="wthumb ${cls}">${thumb}</span>
       <span class="wmain"><b>${esc(w.w)}</b><span class="wmean">${esc(w.pos)} ${esc(w.m[0])}</span>
-      <span class="wmeta"><em class="st-t-${st}">${ST_LABEL[st]}</em>${rec && !rec.def ? ` ・ ${rec.n}回` : ''}${hidden ? ' ・ 非表示' : ''}</span></span>
+      <span class="wmeta"><em class="st-t-${st}">${ST_LABEL[st]}</em>${isNew(rec) ? '' : ` ・ ${rec.n}回`}${hidden ? ' ・ 非表示' : ''}</span></span>
     </button>`;
   }
 
@@ -645,7 +643,7 @@ export function createUI(app) {
     const now = Date.now();
     // 状態ごとの語数(単語・熟語・古典を分けて)。レベルは表示しない
     const statusLine = ([, label, match]) => {
-      const c = { new: 0, learning: 0, mastered: 0 };
+      const c = Object.fromEntries(STATUS_ORDER.map((s) => [s, 0]));
       let total = 0;
       for (const w of index.words) {
         if (!match(w)) continue;
