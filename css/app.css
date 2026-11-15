@@ -7,6 +7,7 @@
   --tx: #f1f1f1;
   --tx-2: #aaa;
   --red: #f03;
+  --chart: #3399ee; /* グラフの青(暗い面の上で見やすさを検証済み) */
   --yellow: #ffe14d;
   --mh: 56px;
   --tab: 48px;
@@ -228,11 +229,54 @@ h1, h2, h3, p { margin: 0; }
 .you-head p { font-size: 12px; color: var(--tx-2); }
 .warn { margin: 4px 0 8px; padding: 10px 12px; font-size: 13px; color: #ffb4ab; background: rgba(255, 0, 51, 0.14); border-radius: 12px; }
 .stat-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
-.stat-row div { min-width: 0; padding: 10px 12px; background: var(--bg-3); border-radius: 12px; }
+.stat-row > * { min-width: 0; padding: 10px 12px; text-align: left; background: var(--bg-3); border-radius: 12px; }
+.stat-row button:active { background: var(--hover); }
+@media (hover: hover) { .stat-row button:hover { background: #3a3a3a; } }
 .stat-row b { display: block; font-size: 20px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .stat-row b small { font-size: 12px; font-weight: 600; margin: 0 1px; }
 .stat-row span { display: block; font-size: 12px; line-height: 1.35; color: var(--tx-2); }
 .st-table { margin-top: 16px; }
+/* グラフ(記録・習得グラフ)。YouTube Studio の分析: 指標のタブがカードとつながり、目盛りは右、横線だけ */
+.ys-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 8px 4px 10px; }
+.ys-head h2 { margin: 0; font-size: 20px; font-weight: 700; }
+.ys-head span { font-size: 13px; color: var(--tx-2); }
+.ys-card { overflow: hidden; background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; }
+.ys-tabs { display: flex; overflow-x: auto; scrollbar-width: none; background: #181818; }
+.ys-tabs::-webkit-scrollbar { display: none; }
+.ys-tab { flex: 1 0 auto; min-width: 104px; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 12px 14px 14px; text-align: left; color: var(--tx-2); border-top: 3px solid transparent; }
+.ys-tab + .ys-tab { border-left: 1px solid var(--line); }
+.ys-tab span { font-size: 12px; }
+.ys-tab b { font-size: 24px; font-weight: 500; line-height: 1.2; white-space: nowrap; }
+.ys-tab b small { margin: 0 1px; font-size: 13px; font-weight: 500; }
+.ys-tab > small { font-size: 12px; }
+.ys-tab.on { color: var(--tx); background: var(--bg-2); border-top-color: var(--chart); }
+@media (hover: hover) { .ys-tab:not(.on):hover { background: #1f1f1f; } }
+.ys-chart { position: relative; padding: 8px 4px 0 12px; touch-action: pan-y; }
+.ys-chart svg { display: block; overflow: visible; }
+.ys-grid { stroke: rgba(255, 255, 255, 0.12); stroke-width: 1; }
+.ys-base { stroke: rgba(255, 255, 255, 0.3); }
+.ys-yl, .ys-xl { fill: var(--tx-2); font-size: 11px; }
+.ys-line { fill: none; stroke: var(--chart); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.ys-area { fill: var(--chart); opacity: 0.12; }
+.ys-bar { fill: var(--chart); }
+.ys-bar.on { fill: #7cc0ff; }
+.ys-hl { fill: rgba(255, 255, 255, 0.06); }
+.ys-cross { stroke: rgba(255, 255, 255, 0.45); stroke-width: 1; }
+.ys-dot { fill: var(--chart); stroke: var(--bg-2); stroke-width: 2; }
+.ys-tip { position: absolute; top: 8px; z-index: 1; display: flex; flex-direction: column; gap: 2px; max-width: 220px; padding: 8px 12px; font-size: 13px; background: #3a3a3a; border-radius: 8px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5); pointer-events: none; }
+.ys-tip b { font-weight: 500; white-space: nowrap; }
+.ys-tip span { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.ys-tip small { font-size: 12px; color: var(--tx-2); white-space: nowrap; }
+.ys-sw { flex: none; width: 10px; height: 10px; background: var(--chart); border-radius: 2px; }
+.ys-note { margin: 0; padding: 0 16px 12px; font-size: 12px; color: var(--tx-2); }
+.ys-pick { padding: 0 16px; font-size: 13px; color: var(--tx-2); }
+.ys-pick:not(:empty) { padding-bottom: 14px; }
+.ys-pick .pill { color: var(--tx); }
+.day-list { margin-top: 4px; }
+.day-row { display: grid; grid-template-columns: 1fr 4.5em 6.5em; gap: 12px; align-items: baseline; padding: 9px 4px; border-bottom: 1px solid var(--line); }
+.day-row b { font-weight: 500; text-align: right; font-variant-numeric: tabular-nums; }
+.day-th { padding-top: 4px; padding-bottom: 6px; font-size: 12px; color: var(--tx-2); }
+.day-th span + span { text-align: right; }
 .st-table h3 { padding: 0 4px 4px; font-size: 16px; font-weight: 500; }
 .st-table h3 small { margin-left: 8px; font-size: 12px; color: var(--tx-2); }
 .st-table div { display: flex; justify-content: space-between; padding: 7px 4px; border-bottom: 1px solid var(--line); }

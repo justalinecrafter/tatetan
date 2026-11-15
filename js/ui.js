@@ -218,6 +218,25 @@ export function createUI(app) {
       <div class="pair"><b>次に出る</b><span>${next}</span></div>`;
   }
 
+  // 単語リスト(易しい順。範囲・習得グラフと同じ並び)の中での位置
+  let positions = null;
+  function positionOf(w) {
+    if (!positions) {
+      positions = new Map();
+      for (const l of RANGE_LISTS) {
+        const all = rangeSource(index, l);
+        all.forEach((x, i) => positions.set(x.id, { label: l.label, i, n: all.length }));
+      }
+    }
+    return positions.get(w.id) || null;
+  }
+
+  // その他(音源・映像のクレジットの並び)に出す、リスト全体での位置
+  function posLine(w) {
+    const p = positionOf(w);
+    return p ? `<p>${icon('list', 18)}<span>${esc(p.label)} ${p.n.toLocaleString()}語中 ${(p.i + 1).toLocaleString()}番目(易しい順)</span></p>` : '';
+  }
+
   function openDetail(word, { item, fromList } = {}) {
     const w = word;
     const parts = [];
@@ -374,6 +393,7 @@ export function createUI(app) {
       ${row('credits', 'info', 'クレジットを見る')}
       ${row('settings', 'settings', '設定')}
       <div class="more-credit">
+        ${posLine(w)}
         ${track ? `<a href="${esc(track.url)}" target="_blank" rel="noopener">${icon('music', 18)}<span>${esc(track.credit)} (${esc(track.title)})</span></a>` : ''}
         ${video
           ? video.url
@@ -714,13 +734,14 @@ export function createUI(app) {
         </div>
         ${store.saveFailed ? '<p class="warn">学習記録を保存できていません。このまま閉じると、今回の分が消えます。端末やブラウザの空き容量を確認し、設定の「バックアップを書き出す」で記録を残してください。</p>' : ''}
         <div class="stat-row">
-          <div><b>${(st.days[todayKey(now)] || 0).toLocaleString()}</b><span>今日の枚数</span></div>
-          <div><b>${(st.card || 0).toLocaleString()}</b><span>今までの枚数</span></div>
-          <div><b>${openTimeHtml(st.openMs)}</b><span>アプリを開いた時間</span></div>
+          <button data-stats="cards"><b>${(st.days[todayKey(now)] || 0).toLocaleString()}</b><span>今日の枚数</span></button>
+          <button data-stats="cards"><b>${(st.card || 0).toLocaleString()}</b><span>今までの枚数</span></button>
+          <button data-stats="time"><b>${openTimeHtml(st.openMs)}</b><span>アプリを開いた時間</span></button>
         </div>
         ${groups.map(statusLine).join('')}
         <div class="rows">
           ${row('range', st.settings.review ? 'replay' : 'list', '出題モード', modeText(st.settings))}
+          ${row('mastery', 'bars', '習得グラフ', '易しい順に区切って、暗記済みの割合を見る')}
           ${row('history', 'history', '履歴')}
           ${row('saved', 'bookmark', '保存したリスト')}
           ${row('library', 'list', '単語帳')}
@@ -731,6 +752,10 @@ export function createUI(app) {
     page.querySelector('.rows').addEventListener('click', (e) => {
       const r = e.target.closest('[data-row]');
       if (r) openPage(r.dataset.row);
+    });
+    page.querySelector('.stat-row').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-stats]');
+      if (b) openPage('stats', { tab: b.dataset.stats });
     });
   }
 
@@ -987,12 +1012,301 @@ export function createUI(app) {
     });
   }
 
+  /* ---------- グラフ(YouTube Studio の分析の見た目) ---------- */
+  // 上に指標のタブ(選んだタブがグラフのカードとつながる)、目盛りは右、横線だけ。
+  // 押す(マウスなら重ねる)と、縦線と点・数値のカードが出る
+  const CHART_H = 220;
+  const PAD = { t: 14, r: 52, b: 28, l: 4 };
+
+  // 目盛りの間隔: steps のうち 4 区切り以内に収まる最小のもの
+  function niceTicks(top, steps) {
+    const step = steps.find((s) => s * 4 >= top) || Math.ceil(top / 4);
+    const max = Math.max(step, Math.ceil(top / step) * step);
+    const ticks = [];
+    for (let i = 0; i * step <= max; i++) ticks.push(i * step);
+    return { max, ticks };
+  }
+  const CARD_STEPS = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000];
+  const MINUTE_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 180, 240, 360, 480, 720];
+  const fmtMin = (m) => (m < 60 ? `${m}分` : `${Number.isInteger(m / 60) ? m / 60 : (m / 60).toFixed(1)}時間`);
+  function minutesText(ms) {
+    const m = Math.floor((ms || 0) / 60000);
+    const h = Math.floor(m / 60);
+    return h ? `${h.toLocaleString()}時間${m % 60 ? `${m % 60}分` : ''}` : `${m}分`;
+  }
+
+  // kind: 'line'(日ごと) | 'bar'(区切りごと)。values は 0〜max。
+  // xTicks: [{ at, label }](line は何番目の点か、bar は何本目の棒の左端か)。tip(i): 数値のカードの中身。onPick(i): 押したとき
+  function drawChart(el, opts) {
+    const { kind, values, max, ticks, fmtTick, xTicks, tip, onPick } = opts;
+    const W = Math.max(260, Math.round(el.clientWidth));
+    const n = values.length;
+    const pw = W - PAD.l - PAD.r;
+    const ph = CHART_H - PAD.t - PAD.b;
+    const slot = pw / n;
+    const x = kind === 'bar' ? (i) => PAD.l + (i + 0.5) * slot : (i) => PAD.l + (n > 1 ? (i / (n - 1)) * pw : pw / 2);
+    const tickX = (t) => (kind === 'bar' ? PAD.l + t.at * slot : x(t.at));
+    const y = (v) => PAD.t + ph - (Math.min(v, max) / max) * ph;
+    const base = PAD.t + ph;
+
+    const grid = ticks
+      .map((v) => `<line class="ys-grid${v ? '' : ' ys-base'}" x1="${PAD.l}" x2="${PAD.l + pw}" y1="${y(v)}" y2="${y(v)}"/><text class="ys-yl" x="${W - PAD.r + 10}" y="${y(v) + 4}">${esc(fmtTick(v))}</text>`)
+      .join('');
+    const xl = xTicks
+      .map((t) => {
+        const tx = tickX(t);
+        const anchor = tx < PAD.l + 18 ? 'start' : tx > PAD.l + pw - 18 ? 'end' : 'middle';
+        return `<text class="ys-xl" x="${tx}" y="${CHART_H - 8}" text-anchor="${anchor}">${esc(t.label)}</text>`;
+      })
+      .join('');
+    let marks;
+    if (kind === 'bar') {
+      const bw = Math.max(1, slot - 2);
+      marks = values
+        .map((v, i) => {
+          const h = base - y(v);
+          if (h <= 0) return '';
+          const r = Math.min(3, bw / 2, h);
+          const x0 = PAD.l + i * slot + 1;
+          return `<path class="ys-bar" data-i="${i}" d="M${x0},${base}V${base - h + r}Q${x0},${base - h} ${x0 + r},${base - h}H${x0 + bw - r}Q${x0 + bw},${base - h} ${x0 + bw},${base - h + r}V${base}Z"/>`;
+        })
+        .join('');
+    } else {
+      const pts = values.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+      marks = `<path class="ys-area" d="M${x(0)},${base}L${pts.join('L')}L${x(n - 1)},${base}Z"/><path class="ys-line" d="M${pts.join('L')}"/>`;
+    }
+    el.innerHTML = `<svg width="${W}" height="${CHART_H}" viewBox="0 0 ${W} ${CHART_H}" role="img">${grid}${marks}<g class="ys-focus"></g>${xl}</svg><div class="ys-tip" hidden></div>`;
+
+    const svg = el.querySelector('svg');
+    const focusG = el.querySelector('.ys-focus');
+    const tipEl = el.querySelector('.ys-tip');
+    const show = (i) => {
+      if (i == null) {
+        focusG.innerHTML = '';
+        tipEl.hidden = true;
+        svg.querySelectorAll('.ys-bar.on').forEach((b) => b.classList.remove('on'));
+        return;
+      }
+      const cx = x(i);
+      if (kind === 'bar') {
+        svg.querySelectorAll('.ys-bar').forEach((b) => b.classList.toggle('on', Number(b.dataset.i) === i));
+        focusG.innerHTML = `<rect class="ys-hl" x="${PAD.l + i * slot}" y="${PAD.t}" width="${slot}" height="${ph}"/>`;
+      } else {
+        focusG.innerHTML = `<line class="ys-cross" x1="${cx}" x2="${cx}" y1="${PAD.t}" y2="${base}"/><circle class="ys-dot" cx="${cx}" cy="${y(values[i])}" r="5"/>`;
+      }
+      tipEl.innerHTML = tip(i);
+      tipEl.hidden = false;
+      // 点の右に出す。右半分なら左に出す。カードの中に収める
+      const off = svg.getBoundingClientRect().left - el.getBoundingClientRect().left;
+      const tw = tipEl.offsetWidth;
+      const px = off + cx;
+      const left = cx > PAD.l + pw / 2 ? px - tw - 12 : px + 12;
+      tipEl.style.left = `${Math.max(4, Math.min(el.clientWidth - tw - 4, left))}px`;
+    };
+    const indexAt = (e) => {
+      const px = e.clientX - svg.getBoundingClientRect().left - PAD.l;
+      const i = kind === 'bar' ? Math.floor(px / slot) : Math.round((px / pw) * (n - 1));
+      return Math.max(0, Math.min(n - 1, i));
+    };
+    svg.addEventListener('pointermove', (e) => {
+      if (e.pointerType === 'mouse') show(indexAt(e));
+    });
+    svg.addEventListener('pointerleave', (e) => {
+      if (e.pointerType === 'mouse') show(opts.sel ?? null);
+    });
+    svg.addEventListener('click', (e) => {
+      opts.sel = indexAt(e);
+      show(opts.sel);
+      onPick?.(opts.sel);
+    });
+    show(opts.sel ?? null);
+    // 幅が変わったら描き直す(選んでいる点はそのまま)
+    if (!el._ro) {
+      el._ro = new ResizeObserver(() => {
+        if (el.isConnected && el._opts && Math.abs(el.clientWidth - el._w) > 1) drawChart(el, el._opts);
+      });
+      el._ro.observe(el);
+    }
+    el._opts = opts;
+    el._w = el.clientWidth;
+  }
+
+  // 指標のタブ(名前・値・補足)
+  const ysTabs = (tabs, on) =>
+    tabs.map(([id, label, value, sub]) => `<button class="ys-tab${id === on ? ' on' : ''}" data-tab="${id}"><span>${esc(label)}</span><b>${value}</b>${sub ? `<small>${esc(sub)}</small>` : ''}</button>`).join('');
+
+  const WEEK = '日月火水木金土';
+  function dayLabel(key) {
+    const [y, m, d] = key.split('-').map(Number);
+    const dt = new Date(y, m - 1, d);
+    const head = y !== new Date().getFullYear() ? `${y}年` : '';
+    return `${head}${m}月${d}日(${WEEK[dt.getDay()]})`;
+  }
+
+  /* ---------- 日ごとの記録(枚数・アプリを開いた時間) ---------- */
+  const STATS_DAYS = 30;
+  let statsTab = 'cards';
+  function renderStats(opts = {}) {
+    if (opts.tab === 'cards' || opts.tab === 'time') statsTab = opts.tab;
+    app.tickOpenTime?.();
+    const st = S();
+    const now = new Date();
+    const cards = (k) => st.days[k] || 0;
+    const time = (k) => st.openDays[k] || 0;
+    const timeText = (k) => (st.openDays[k] ? minutesText(st.openDays[k]) : '—');
+    const keys = [...new Set([...Object.keys(st.days), ...Object.keys(st.openDays)])]
+      .filter((k) => cards(k) || time(k) >= 60000)
+      .sort()
+      .reverse();
+    // 直近 30 日(右端が今日)
+    const recent = [];
+    for (let i = STATS_DAYS - 1; i >= 0; i--) recent.push(todayKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - i).getTime()));
+    const sum = (f) => recent.reduce((a, k) => a + f(k), 0);
+    const md = (k) => k.split('-').slice(1).map(Number).join('/');
+    const tabs = [
+      ['cards', '見た枚数', `${sum(cards).toLocaleString()}<small>枚</small>`],
+      ['time', 'アプリを開いた時間', openTimeHtml(sum(time))],
+    ];
+
+    page.innerHTML = `${pageHead('記録')}
+      <div class="page-in stats">
+        <div class="ys-head"><h2>過去30日間</h2><span>${md(recent[0])}〜${md(recent[STATS_DAYS - 1])}</span></div>
+        <div class="ys-card">
+          <div class="ys-tabs" id="stTabs"></div>
+          <div class="ys-chart" id="stChart"></div>
+        </div>
+        <h2 class="yt-sec">日ごとの記録</h2>
+        ${keys.length ? `<div class="day-row day-th"><span>日付</span><span>枚数</span><span>時間</span></div>` : '<p class="empty">まだ記録がありません</p>'}
+        <div class="day-list">
+          ${keys.map((k) => `<div class="day-row"><span>${esc(dayLabel(k))}</span><b>${cards(k).toLocaleString()}</b><b>${esc(timeText(k))}</b></div>`).join('')}
+        </div>
+      </div>`;
+
+    const draw = () => {
+      const isCards = statsTab === 'cards';
+      const values = recent.map((k) => (isCards ? cards(k) : time(k) / 60000));
+      const { max, ticks } = niceTicks(Math.max(0, ...values), isCards ? CARD_STEPS : MINUTE_STEPS);
+      const xTicks = [];
+      for (let i = STATS_DAYS - 1; i >= 0; i -= 7) xTicks.push({ at: i, label: md(recent[i]) });
+      page.querySelector('#stTabs').innerHTML = ysTabs(tabs, statsTab);
+      drawChart(page.querySelector('#stChart'), {
+        kind: 'line',
+        values,
+        max,
+        ticks,
+        fmtTick: (v) => (isCards ? v.toLocaleString() : fmtMin(v)),
+        xTicks,
+        tip: (i) => {
+          const k = recent[i];
+          return `<b>${esc(dayLabel(k))}</b><span><i class="ys-sw"></i>${isCards ? `${cards(k).toLocaleString()}枚` : esc(timeText(k))}</span>`;
+        },
+      });
+    };
+    page.querySelector('#stTabs').addEventListener('click', (e) => {
+      const t = e.target.closest('[data-tab]');
+      if (!t || t.dataset.tab === statsTab) return;
+      statsTab = t.dataset.tab;
+      currentOpts = { ...currentOpts, tab: statsTab };
+      draw();
+    });
+    draw();
+  }
+
+  /* ---------- 習得グラフ(易しい順に区切った語の、暗記済みの割合) ---------- */
+  const MASTERY_BIN = { 'en-w': 100, 'en-p': 50, kb: 20 };
+  let masteryTab = null;
+  function renderMastery() {
+    const st = S();
+    const lists = RANGE_LISTS.filter((l) => rangeSource(index, l).length);
+    if (!lists.some((l) => l.id === masteryTab)) {
+      const lang = st.settings.scope === 'kb' ? 'kb' : 'en';
+      masteryTab = (lists.find((l) => l.lang === lang) || lists[0])?.id;
+    }
+    // 区切りごとの内訳を先にまとめる(タブの値にも使う)
+    const data = Object.fromEntries(
+      lists.map((list) => {
+        const all = rangeSource(index, list);
+        const size = MASTERY_BIN[list.id] || RANGE_SIZE;
+        const bins = [];
+        for (let s = 0; s < all.length; s += size) {
+          const c = Object.fromEntries(STATUS_ORDER.map((x) => [x, 0]));
+          const ws = all.slice(s, s + size);
+          for (const w of ws) c[shownState(st.recs[w.id])]++;
+          bins.push({ s, n: ws.length, c });
+        }
+        const mastered = bins.reduce((a, b) => a + b.c[ST.MASTERED], 0);
+        return [list.id, { list, all, size, bins, mastered }];
+      })
+    );
+    const tabs = lists.map((l) => {
+      const d = data[l.id];
+      return [l.id, l.label, `${Math.round((d.mastered / d.all.length) * 100)}<small>%</small>`, `${d.mastered.toLocaleString()} / ${d.all.length.toLocaleString()}語`];
+    });
+
+    page.innerHTML = `${pageHead('習得グラフ')}
+      <div class="page-in mastery">
+        <div class="ys-head"><h2>暗記済みの割合</h2><span>易しい順</span></div>
+        <div class="ys-card">
+          <div class="ys-tabs" id="msTabs"></div>
+          <div class="ys-chart" id="msChart"></div>
+          <p class="ys-note" id="msNote"></p>
+          <div class="ys-pick" id="msPick"></div>
+        </div>
+      </div>`;
+
+    const draw = () => {
+      const { list, all, size, bins } = data[masteryTab];
+      const rate = (b) => b.c[ST.MASTERED] / b.n;
+      const xTicks = [];
+      for (let i = 0; i <= bins.length; i += 5) xTicks.push({ at: i, label: Math.min(i * size, all.length).toLocaleString() });
+      page.querySelector('#msTabs').innerHTML = ysTabs(tabs, masteryTab);
+      page.querySelector('#msNote').textContent = `${size}語ずつ ・ 棒を押すと内訳が出ます`;
+      const pick = page.querySelector('#msPick');
+      pick.innerHTML = '';
+      drawChart(page.querySelector('#msChart'), {
+        kind: 'bar',
+        values: bins.map(rate),
+        max: 1,
+        ticks: [0, 0.25, 0.5, 0.75, 1],
+        fmtTick: (v) => `${Math.round(v * 100)}%`,
+        xTicks,
+        tip: (i) => {
+          const b = bins[i];
+          return `<b>${b.s + 1}〜${b.s + b.n}語目</b><span><i class="ys-sw"></i>暗記済み ${Math.round(rate(b) * 100)}%(${b.c[ST.MASTERED]}語)</span>
+            <small>知ってそう ${b.c[ST.LIKELY]} ・ 学習中 ${b.c[ST.LEARNING]} ・ 未出 ${b.c[ST.NEW]}</small>`;
+        },
+        onPick: (i) => {
+          const range = { list: list.id, start: Math.floor(bins[i].s / RANGE_SIZE) * RANGE_SIZE };
+          const playing = !st.settings.review && st.settings.range?.list === range.list && st.settings.range?.start === range.start;
+          pick.innerHTML = playing
+            ? `<span>${esc(rangeLabel(index, range))} を出題中です</span>`
+            : `<button class="pill" data-range-start="${range.start}">${icon('play', 18)}${esc(rangeLabel(index, range))} から出題</button>`;
+        },
+      });
+    };
+    page.querySelector('.mastery').addEventListener('click', (e) => {
+      const t = e.target.closest('#msTabs [data-tab]');
+      if (t) {
+        if (t.dataset.tab !== masteryTab) {
+          masteryTab = t.dataset.tab;
+          draw();
+        }
+        return;
+      }
+      const go = e.target.closest('[data-range-start]');
+      if (go && setMode({ range: { list: masteryTab, start: Number(go.dataset.rangeStart) } })) closePage();
+    });
+    draw();
+  }
+
   const RENDER = {
     range: renderRange,
     library: renderLibrary,
     saved: renderSaved,
     history: renderHistory,
     you: renderYou,
+    stats: renderStats,
+    mastery: renderMastery,
     settings: renderSettings,
     credits: renderCredits,
   };

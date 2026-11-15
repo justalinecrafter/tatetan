@@ -39,6 +39,7 @@ export function freshState() {
     card: 0, // これまでに見た枚数(出題の時計にも使う)
     days: {},
     openMs: 0, // アプリを開いていた時間の合計(画面に出ている間だけ)
+    openDays: {}, // 日ごとのアプリを開いていた時間 { 'YYYY-MM-DD': ミリ秒 }(枚数は days)
     sessions: [],
   };
 }
@@ -60,6 +61,7 @@ function normalize(data) {
   st.settings.review = st.settings.review === true;
   if (st.settings.review) st.settings.range = null;
   if (!(st.openMs >= 0)) st.openMs = 0;
+  if (!st.openDays || typeof st.openDays !== 'object' || Array.isArray(st.openDays)) st.openDays = {};
   return st;
 }
 

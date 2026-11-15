@@ -1,5 +1,5 @@
 // 起動処理と、画面の外枠(上部バー・左メニュー・下部タブ)。
-import { createStore } from './store.js';
+import { createStore, todayKey } from './store.js';
 import { loadWords } from './words.js';
 import { Bgm, Tts } from './media.js';
 import { createFeed } from './feed.js';
@@ -88,7 +88,7 @@ function buildChrome(app) {
   });
 }
 
-// アプリを開いていた時間を数える。画面に出ている間だけ、15秒ごとに足す。
+// アプリを開いていた時間を数える(合計と日ごと)。画面に出ている間だけ、15秒ごとに足す。
 // スリープなどで時計が大きく飛んだ分は数えない(1回に30秒まで)
 function trackOpenTime(store) {
   let last = document.hidden ? 0 : Date.now();
@@ -96,7 +96,12 @@ function trackOpenTime(store) {
     const now = Date.now();
     if (last) {
       const dt = Math.min(now - last, 30000);
-      if (dt > 0) store.state.openMs = (store.state.openMs || 0) + dt;
+      if (dt > 0) {
+        const st = store.state;
+        const day = todayKey(now);
+        st.openMs = (st.openMs || 0) + dt;
+        st.openDays[day] = (st.openDays[day] || 0) + dt;
+      }
     }
     last = document.hidden ? 0 : now;
   };

@@ -1067,6 +1067,38 @@
 "credit": "映像：自作(Minecraft のプレイ映像)",
 "url": "",
 "tags": "minecraft, ice, stone"
+},
+{
+"f": "own_tatetan3.mp4",
+"dur": 18.6,
+"author": "縦単",
+"credit": "映像：独自で撮影",
+"url": "",
+"tags": "road, summer, trees, sky"
+},
+{
+"f": "own_tatetan4.mp4",
+"dur": 17.07,
+"author": "縦単",
+"credit": "映像：独自で撮影",
+"url": "",
+"tags": "sunset, evening, lights, people"
+},
+{
+"f": "own_tatetan6.mp4",
+"dur": 7.0,
+"author": "縦単",
+"credit": "映像：独自で撮影",
+"url": "",
+"tags": "mountain, lake, green"
+},
+{
+"f": "own_tatetan7.mp4",
+"dur": 9.2,
+"author": "縦単",
+"credit": "映像：独自で撮影",
+"url": "",
+"tags": "mountain, fog, rain, town"
 }
 ],
 "bgm": [
