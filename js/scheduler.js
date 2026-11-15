@@ -5,7 +5,7 @@
 // その合間に、日単位の復習・易しい語の確認・背伸びの語・抜き打ち(知ってそう・定着した暗記済み)を混ぜる。
 // 即スワイプされた未出の語は、しばらく出さず(hold)、新しい語の窓の中でも選ばれにくくする。
 // 復習モード(pickDrill)では、暗記済み・知ってそうの語だけを、定着させるのに効く順に出す。
-import { ST, DAY, BOX_GAPS, retrievability, isDue, overdue, pKnown, rare, isNew } from './srs.js';
+import { ST, DAY, BOX_GAPS, retrievability, isDue, overdue, pKnown, rare, isNew, easyBoost } from './srs.js';
 
 const RECENT_LIMIT = 6; // 同じ語を続けない
 const SESSION_CAP = 4; // 1 回の利用で同じ語を流す上限
@@ -15,10 +15,13 @@ const CHECK_MIN_GAP = DAY / 2;
 const FORCE_OVERDUE = 10; // 学習枠の出番をこの枚数過ぎたら必ず出す
 
 const WINDOW_START_U = 0.15; // 知らない確率がこれを超えたところから新しい語の窓を始める
-const WINDOW_SUM = 6; // 窓に入れる「知らない語」の見込み数
-const WINDOW_TAU = 3;
+const WINDOW_SUM = 12; // 窓に入れる「知らない語」の見込み数
+const WINDOW_TAU = 6; // 窓の中の重みの減り方(大きいほど窓の奥まで出やすい)
 const WINDOW_MAX = 150;
-const EASY_PK = 0.85;
+// 易しい語の確認は、窓より手前の全体から。手前の区間がどれも知っていた語ばかりなら、確認の割合をこの倍率まで下げる
+const EASY_RATE_MIN = 0.5;
+// 背伸びの語は、窓の終わりからこの幅(リストの長さに対する割合)ほど先でいちばん出やすく、その先はなだらかに減る
+const STRETCH_TAU = 0.08;
 
 // 単語と熟語の比: 直近 30 枚(この利用の中)のうち熟語がこの幅に収まるようにする。
 // 幅を外れそうなら、足りない側から出す。利用の始めは目安の割合を少し混ぜて数える(最初の数枚で偏らないように)
@@ -88,11 +91,13 @@ export function summarizeHabits(days, sessions, now) {
 // 学習枠の段の数。2〜3日おきに使う人は、卒業前にもう1段確かめる
 export const boxStages = (habit) => (habit && habit.gapDays >= 2 ? 4 : 3);
 
+const skipWeight = (w, recs) => Math.pow(0.5, recs[w.id]?.skip || 0);
+
 // 新しい語の窓。fresh は易しい順に並んだ未出の単語。何度も即スワイプされた語は選ばれにくくする。
-//   返り値: { items: [{ w, wt }], frontier, easy: [易しい側の未出語] }
+//   返り値: { items: [{ w, wt }], frontier, end: 窓の最後の語の位置, easy: [{ w, wt, boost }](窓より手前の未出語すべて) }
 export function frontierWindow(fresh, L, recs = {}) {
   const items = [];
-  const easy = [];
+  const before = [];
   let started = false;
   let sumU = 0;
   let wSum = 0;
@@ -100,11 +105,11 @@ export function frontierWindow(fresh, L, recs = {}) {
   for (const w of fresh) {
     const u = 1 - pKnown(L, w);
     if (!started && u < WINDOW_START_U) {
-      if (easy.length < 12 && u < 1 - EASY_PK) easy.push(w);
+      before.push(w);
       continue;
     }
     started = true;
-    const wt = u * Math.exp(-sumU / WINDOW_TAU) * Math.pow(0.5, recs[w.id]?.skip || 0);
+    const wt = u * Math.exp(-sumU / WINDOW_TAU) * skipWeight(w, recs);
     items.push({ w, wt });
     wSum += wt;
     dSum += wt * w.d;
@@ -112,7 +117,26 @@ export function frontierWindow(fresh, L, recs = {}) {
     if (sumU >= WINDOW_SUM || items.length >= WINDOW_MAX) break;
   }
   const frontier = wSum > 0 ? dSum / wSum : fresh.length ? fresh[fresh.length - 1].d : 1;
-  return { items, frontier, easy };
+  const top = items.length ? items[0].w.d : before.length ? before[before.length - 1].d : 1;
+  const end = items.length ? items[items.length - 1].w.d : top;
+  // 易しい語の確認: 窓に近いほど少し出やすく(リストの先頭の 2 倍まで)。確認の手応えで区間ごとに増減させる
+  const easy = before.map((w) => {
+    const boost = easyBoost(L, w);
+    return { w, boost, wt: (1 + Math.min(1, w.d / top)) * boost * skipWeight(w, recs) };
+  });
+  return { items, frontier, end, easy };
+}
+
+// 背伸びの語: 窓より先の、まだ一度も出していない語。窓の終わりから離れるにつれ出やすくなり、
+// STRETCH_TAU ほど先でいちばん出やすく、その先はなだらかに減る(はっきりした線は引かない)
+function stretchOf(fresh, end, recs) {
+  const out = [];
+  for (const w of fresh) {
+    if (w.d <= end || recs[w.id]) continue;
+    const x = (w.d - end) / STRETCH_TAU;
+    out.push({ w, wt: x * Math.exp(-x) });
+  }
+  return out;
 }
 
 function collect(ctx, lang) {
@@ -197,15 +221,14 @@ function collect(ctx, lang) {
   g.window = win.items;
   g.frontier = win.frontier;
   g.easy = win.easy;
-  const untouched = (w) => !recs[w.id];
-  g.stretch = g.freshWords.filter((w) => untouched(w) && w.d >= win.frontier + 0.1 && w.d <= win.frontier + 0.4);
+  g.stretch = stretchOf(g.freshWords, win.end, recs);
   g.remWordsAhead = g.freshWords.filter((w) => w.d >= win.frontier - 0.05).length;
 
   const pwin = frontierWindow(g.freshPhrases, L, recs);
   g.pWindow = pwin.items;
   g.pFrontier = pwin.frontier;
   g.pEasy = pwin.easy;
-  g.pStretch = g.freshPhrases.filter((p) => untouched(p) && p.d >= pwin.frontier + 0.1 && p.d <= pwin.frontier + 0.4);
+  g.pStretch = stretchOf(g.freshPhrases, pwin.end, recs);
   g.remPhrasesAhead = g.freshPhrases.filter((p) => p.d >= pwin.frontier - 0.05).length;
   return g;
 }
@@ -282,6 +305,15 @@ function pickFresh(g, ctx) {
   return { word: sample(list, (x) => x.wt, ctx.rng).w, why: 'new' };
 }
 
+// 易しい語の確認の割合。手前の区間がどれも知っていた語ばかりなら、区間の出やすさの平均に合わせて下げる
+// (RATE.easy の EASY_RATE_MIN 倍まで)。知らない語が見つかる区間があっても、RATE.easy より増やさない
+function easyRate(g) {
+  const all = [...g.easy, ...g.pEasy];
+  if (!all.length) return 0;
+  const avg = all.reduce((a, x) => a + x.boost, 0) / all.length;
+  return RATE.easy * Math.min(1, Math.max(EASY_RATE_MIN, avg));
+}
+
 // 直近の語(この利用で見た語と、もう並べてある語)
 const recentIds = (ctx, n) => [...ctx.recent, ...ctx.queued].slice(-n);
 
@@ -297,8 +329,9 @@ function masteredFull(ctx) {
   return m + 1 > MASTERED_SHARE * Math.max(n + 1, 10);
 }
 
+// 期限どおりに確かめたい語(mkp: 新しい語・背伸びで初めて見て暗記を押した語と、思い出せなかった暗記済みの語)は残す
 function dropMastered(g, recs) {
-  const keep = (w) => recs[w.id]?.st !== ST.MASTERED;
+  const keep = (w) => recs[w.id]?.st !== ST.MASTERED || recs[w.id].mkp;
   g.review = g.review.filter(keep);
   g.ahead = g.ahead.filter(keep);
   g.check = g.check.filter(keep);
@@ -342,7 +375,7 @@ function pickFromLang(ctx, lang) {
   ctx.frontiers[lang] = g.frontier;
   ctx.frontiers[`${lang}:p`] = g.pFrontier;
   g.share = phraseShare(g, ctx.flow || {});
-  // 暗記済みの語の確認が枠を使い切っていたら、この1枚では出さない。
+  // 暗記済みの語の確認が枠を使い切っていたら、この1枚では出さない(期限どおりに確かめたい語は除く)。
   // そのとき暗記済みの語は復習の溜まり具合にも数えない(出せない語のために新しい語を止めない)
   if (masteredFull(ctx)) dropMastered(g, ctx.recs);
   else g.upcoming += g.upcomingMastered;
@@ -383,7 +416,7 @@ function choose(ctx, g, forced) {
     const avg = g.check.reduce((a, w) => a + (1 - retrievability(ctx.recs[w.id], ctx.now)), 0) / g.check.length;
     pCheck = RATE.checkMin + (RATE.checkMax - RATE.checkMin) * Math.min(1, avg * 2);
   }
-  const pEasy = g.easy.length || g.pEasy.length ? RATE.easy : 0;
+  const pEasy = easyRate(g);
   let pStretch = g.stretch.length || g.pStretch.length ? RATE.stretch : 0;
 
   // 飽きているときは復習を減らし、新しい語・背伸びへ回す
@@ -456,13 +489,12 @@ function choose(ctx, g, forced) {
     case 'review': return { word: pickReview(g.review, ctx), why: 'review' };
     case 'check': return { word: pickCheck(g.check, ctx), why: 'check' };
     case 'easy': {
-      // 易しい順に先頭の数語から
       const list = pickSide(g.easy, g.pEasy, g.share, rng);
-      return { word: list[Math.floor(rng() * Math.min(4, list.length))], why: 'easy' };
+      return { word: sample(list, (x) => x.wt, rng).w, why: 'easy' };
     }
     case 'stretch': {
       const list = pickSide(g.stretch, g.pStretch, g.share, rng);
-      return { word: list[Math.floor(rng() * list.length)], why: 'stretch' };
+      return { word: sample(list, (x) => x.wt, rng).w, why: 'stretch' };
     }
     case 'new': {
       const picked = pickFresh(g, ctx);

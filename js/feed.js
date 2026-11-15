@@ -760,7 +760,7 @@ export function createFeed(app) {
       return;
     }
     pushSnap(item);
-    advance(st, index, w, { revealed: item.revealed, now });
+    advance(st, index, w, { revealed: item.revealed, why: item.why, now });
     item.disliked = false;
     item.dislikeSnap = null;
     store.save();

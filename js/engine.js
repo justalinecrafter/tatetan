@@ -2,8 +2,8 @@
 //   st:  保存データ(store.state)
 //   ses: 1 回の利用のあいだだけ持つ情報 { counts, recent, checked, flow, drill }
 import {
-  ST, G, classify, apply, memorize, unmark, dislike, pKnown, farEasy, updateLearner, logBox, logReview,
-  pushBaseline, thresholds, newLearner, newTrack, thetaOf, dayKey, isNew,
+  ST, G, classify, apply, memorize, unmark, dislike, pKnown, farEasy, updateLearner, logBox, logReview, logEasy,
+  pushBaseline, thresholds, newLearner, newTrack, thetaOf, dayKey, isNew, shownState,
 } from './srs.js';
 import { pickNext, summarizeHabits, boxStages, frontierOf, frontierKey, DRILL_AGAIN_MAX } from './scheduler.js';
 
@@ -155,6 +155,14 @@ export function commit(st, ses, index, word, imp, { now, why, rng }) {
     }
   }
 
+  // 易しい語の確認の手応え: 暗記を押した・知ってそうになった語は「知っていた」、学習中になった語は「知らなかった」。
+  // 未出のまま(一瞬で飛ばした・判断を保留した)なら数えない。
+  // 暗記・苦手を押した語は押した時点で記録ができているので、この1枚で記録ができたか(firstCard)で初めての語と見分ける
+  if (why === 'easy' && (first || rec?.firstCard === st.card)) {
+    const after = shownState(st.recs[word.id]);
+    if (after !== ST.NEW) logEasy(L, word, after !== ST.LEARNING);
+  }
+
   // 戻ってきたあとの見直しは、離れる前に数えた1枚の続き。枚数・履歴・直近の様子には入れない
   if (imp.resumed) return { ev, fx };
 
@@ -195,13 +203,13 @@ export const isMarked = (rec) => !!rec && rec.st === ST.MASTERED;
 export const wantsNudge = (rec) => !!rec && rec.st === ST.LIKELY && !rec.lkc && !rec.nudged;
 
 // ダブルタップ・暗記ボタン: 暗記済みにする。すでに暗記済みなら何もしない。
-// 返り値: { action: 'memorize' | null }
-export function advance(st, index, word, { revealed, now, rng = Math.random }) {
+// why: 押したカードの種類(新しい語・背伸びなど)。返り値: { action: 'memorize' | null }
+export function advance(st, index, word, { revealed, why, now, rng = Math.random }) {
   const L = learner(st, word.lang);
   const rec = st.recs[word.id];
   if (isMarked(rec)) return { action: null };
   const first = isNew(rec);
-  st.recs[word.id] = memorize(rec, { revealed }, word, { now, card: st.card, theta: thetaOf(L, word), pk: pKnown(L, word), ivl: L.ivl, rng });
+  st.recs[word.id] = memorize(rec, { revealed }, word, { now, why, card: st.card, theta: thetaOf(L, word), pk: pKnown(L, word), ivl: L.ivl, rng });
   // 初めての語で暗記を押した = もともと知っていた、の強い証拠(答えを見る前ならなお強い)
   if (first) updateLearner(L, word, revealed ? 0.7 : 1, revealed ? 0.3 : 0.6);
   return { action: 'memorize' };

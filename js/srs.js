@@ -9,7 +9,8 @@
 //   未出     まだ出ていない語。即スワイプしただけの語も、ほとんど目に入っていないとみなして未出のまま
 //   学習中   覚えている途中。覚えかけは「学習枠」で枚数刻み(約4 → 10 → 25枚)に確かめ、卒業後は日単位で復習する
 //   知ってそう 行動から定着度が高いと推定した語。抜き打ちでたまに出すだけ
-//   暗記済み  利用者が暗記ボタンを押した語だけ。押した数日後に一度確かめ、そのあとは抜き打ちだけ
+//   暗記済み  利用者が暗記ボタンを押した語だけ。押した数日後に一度確かめ、そのあとは抜き打ちだけ。
+//            思い出せなかったら次の利用でもう一度確かめ、続けて思い出せなかったときだけ学習中へ戻す
 // 実力 θ はリスト上の位置(0〜1)で表し、「知っている確率」は θ を中心としたなだらかな坂で持つ。
 // 単語と熟語はリストが別なので、θ と坂の幅もそれぞれに持つ。
 
@@ -130,6 +131,38 @@ export function logReview(L, success) {
   L.ivl = clamp((L.ivl || 1) * (success ? 1.01 : 0.94), 0.4, 2);
 }
 
+/* ---------- 易しい語の確認の手応え ----------
+  確認で出した語を、リスト上の位置で 20 区間に分け、区間ごとに「出した回数・知らなかった回数」を数える。
+  L.ez: { 'w3': [回数, 知らなかった回数], 'p12': … }(w: 単語リスト / p: 熟語リスト)。
+  知っていた語ばかりの区間は確認を出にくく、知らない語が見つかった区間は出やすくする(scheduler で使う) */
+const EASY_BINS = 20;
+const EASY_AIM = 0.1; // 記録がないときの「知らない語」の見込み。これなら出やすさは 1 倍
+const EASY_PRIOR = 5; // 見込みを何回分の記録として扱うか(数回の結果で大きく振れないように)
+const EASY_KEEP = 30; // 区間ごとに覚えておく回数。超えたら古い分を薄める
+const EASY_BOOST = [0.3, 2]; // 出やすさの下限・上限
+
+const easyKey = (word) => `${word.kind === 'phrase' ? 'p' : 'w'}${Math.min(EASY_BINS - 1, Math.floor(word.d * EASY_BINS))}`;
+
+export function logEasy(L, word, known) {
+  const log = (L.ez ||= {});
+  const key = easyKey(word);
+  let [n, miss] = log[key] || [0, 0];
+  n++;
+  if (!known) miss++;
+  if (n > EASY_KEEP) {
+    miss *= EASY_KEEP / n;
+    n = EASY_KEEP;
+  }
+  log[key] = [n, Math.round(miss * 100) / 100];
+}
+
+// その区間の確認の出やすさ。知らない語の見込みが EASY_AIM なら 1
+export function easyBoost(L, word) {
+  const [n, miss] = L.ez?.[easyKey(word)] || [0, 0];
+  const rate = (miss + EASY_AIM * EASY_PRIOR) / (n + EASY_PRIOR);
+  return clamp(rate / EASY_AIM, EASY_BOOST[0], EASY_BOOST[1]);
+}
+
 /* ---------- 行動の読み取り ---------- */
 
 // 個人の「読む速さ」を基準にする。遅い人を「考え込んだ」と誤判定しないため。
@@ -177,12 +210,19 @@ export function classify(imp, rec, ctx) {
   const encode = b >= encodeAt || !!imp.detail;
   const interest = encode || !!imp.saved;
   const instant = !imp.revealed && f < quick;
+  // 暗記済みの語は、しばらく考えてから答えを開いたときだけ、学習中へ戻す判断に数える。
+  // すぐ答えを開いたのは、念のための確認か思い出せなかったのか分からないので soft
+  // (確かめ直すが、学習中へ戻す回数には数えない。気づかないうちに暗記済みが外れないように)
+  const forgot = (ev) =>
+    rec?.st === ST.MASTERED && f < think
+      ? { ...ev, soft: true, why: `${ev.why}(暗記済みのまま確かめ直す)` }
+      : ev;
 
   if (imp.manual) return { kind: 'none', why: '単語帳から開いた' };
   if (!imp.revealed && f > 30) return { kind: 'none', why: '放置とみなす' };
 
   if (imp.returned) {
-    if (imp.revealed) return { kind: 'grade', grade: G.AGAIN, conf: 0.6, why: '戻って答えを確認した' };
+    if (imp.revealed) return forgot({ kind: 'grade', grade: G.AGAIN, conf: 0.6, why: '戻って答えを確認した' });
     if (instant || first) return { kind: 'none', why: '戻ってきて通り過ぎた' };
     return { kind: 'grade', grade: G.HARD, conf: 0.3, why: '戻って見直した' };
   }
@@ -233,7 +273,7 @@ export function classify(imp, rec, ctx) {
   let ev;
   if (imp.revealed) {
     if (b < 0.9 && f < think) ev = { kind: 'grade', grade: G.HARD, conf: 0.5, why: '合っているか確認した' };
-    else if (f >= think || encode) ev = { kind: 'grade', grade: G.AGAIN, conf: 0.75, lapse: true, why: '思い出せず答えを読んだ' };
+    else if (f >= think || encode) ev = forgot({ kind: 'grade', grade: G.AGAIN, conf: 0.75, lapse: true, why: '思い出せず答えを読んだ' });
     else ev = { kind: 'grade', grade: G.HARD, conf: 0.55, why: '少し迷って答えを見た' };
   } else if (f < think) {
     const faster = rec.fm && imp.frontMs < rec.fm * 0.7 && rec.s >= 1;
@@ -299,7 +339,9 @@ function enterBox(rec, stage, ctx) {
   delete rec.park;
   delete rec.mk;
   delete rec.mkc;
+  delete rec.mkp;
   delete rec.lkc;
+  delete rec.slip;
   rec.dueCard = ctx.card + jitter(BOX_GAPS[stage - 1], rng);
   rec.due = ctx.now + 4 * HOUR; // 利用が途切れたら、次に来たときに出す
 }
@@ -437,21 +479,30 @@ export function apply(rec, ev, word, ctx) {
 
   // 日単位の復習(学習中・知ってそう・暗記済み)
   if (ev.grade === G.AGAIN) {
-    if (settled(rec)) {
-      // 定着していた暗記済みの1回のど忘れは、学習枠へ戻さず間隔を縮めるだけ
+    if (rec.st === ST.MASTERED && !(rec.slip && gapped && !ev.soft)) {
+      // 暗記済みの語は、1回思い出せなかっただけでは学習中へ戻さない(slip: 前回の確かめで、考えてから答えを開いた)。
+      // 答えを見てから押した語と同じ扱いにして、1〜3日後にもう一度確かめる(暗記済みの枠を超えても期限どおりに: mkp)
       next.s = Math.max(next.s, 0.5);
+      if (!ev.soft) next.slip = 1;
+      next.mk = 1;
+      next.mkc = 1;
+      next.mkp = 1;
       scheduleDays(next, ctx);
+      confirmIn(next, MARK_CHECK[1], ctx);
     } else {
-      // 知ってそう・暗記済みでも、忘れていたら学習中に戻す
+      // 知ってそう・学習中の語と、別の利用で続けて考えてから答えを開いた暗記済みの語は、学習中に戻す
       next.fail = 0;
       enterBox(next, 1, ctx);
     }
     return { rec: next, fx: null };
   }
+  // 別の利用で思い出せたら、前回思い出せなかった印を消す(答えを見た直後の同じ利用の中で思い出せたのは数えない)
+  if (gapped) delete next.slip;
 
   // 確かめの出番を、別の日に通過した
   if (gapped && next.mkc) {
     delete next.mkc;
+    delete next.mkp;
     if (!success && next.mk === 2) next.mk = 1; // 迷ったなら、答えを見てから押したのと同じ扱いに
   }
   if (gapped && next.lkc) {
@@ -464,6 +515,7 @@ export function apply(rec, ev, word, ctx) {
 }
 
 // 利用者が「暗記」を押した(未出・学習中・知ってそう → 暗記済み)。答えを見ずに押したなら本当に知っていたとみなす。
+//   ctx.why: 押したカードの種類
 export function memorize(rec, imp, word, ctx) {
   const next = copy(rec, ctx, word);
   const first = isNew(rec);
@@ -482,6 +534,8 @@ export function memorize(rec, imp, word, ctx) {
   next.fail = 0;
   next.mk = Math.max(next.mk || 0, imp.revealed ? 1 : 2);
   next.mkc = 1;
+  // 新しい語・背伸びで初めて見て押した語は、最初の確かめを暗記済みの枠を超えても期限どおりに出す
+  if (first && (ctx.why === 'new' || ctx.why === 'stretch')) next.mkp = 1;
   delete next.lkc;
   delete next.park;
   scheduleDays(next, ctx);
