@@ -2,12 +2,14 @@
 // スクロールはブラウザ標準の scroll-snap に任せ(指に吸い付く感触を保つため)、
 // 中身と動画要素だけを現在位置の周辺に限って差し替える。
 import { icon } from './icons.js';
-import { ST_LABEL, shownState } from './srs.js';
+import { ST, ST_LABEL, shownState } from './srs.js';
 import { lastList, addTo } from './lists.js';
 import { newSession, next as pickNextCard, commit, advance, stepBack, markDifficult, isMarked, wantsNudge } from './engine.js';
 import { Shuffler } from './media.js';
 import { DEVICE, debugLog } from './device.js';
 import { fitAll } from './fit.js';
+import { rangeWords, rangeList, rangeLabel } from './words.js';
+import { drillCount } from './scheduler.js';
 
 const VIDEO_POOL = 4;
 const RENDER_BEHIND = 2;
@@ -46,6 +48,8 @@ const TITLES_BY_REASON = {
   review: ['また会いましたね', '覚えてるか確かめに来ました', '再登場です。覚えてますか?'],
   warmup: ['おかえりなさい。まずは復習から', '準備運動です'],
   check: ['抜き打ちです', '前に暗記したやつです。まさか忘れてませんよね', '昔の単語が帰ってきました'],
+  drill: ['復習モード。忘れかけていませんか?', '定着させにいきます', '前に覚えたやつです。まだ言えますか?', 'そろそろ怪しい頃の単語です'],
+  'drill-again': ['さっきのをもう一回', '今度は思い出せますか?', 'もう一度いきます'],
   ahead: ['念のためもう一回', 'そろそろ忘れる頃かと思って'],
   easy: ['これは余裕ですよね?', '小手調べ'],
   stretch: ['ちょっと背伸びしてみる', '上級者向け(知らなくて当然)', 'レア単語が出ました'],
@@ -263,6 +267,67 @@ export function createFeed(app) {
     return randomOf(pool && Math.random() < 0.75 ? pool : TITLES);
   }
 
+  // 上部の出題モードの札(おまかせのときは出さない)。押すと出題モードのページへ
+  function modeChip() {
+    const s = settings();
+    let label = '';
+    let ic = 'list';
+    if (s.review) {
+      label = '復習モード';
+      ic = 'replay';
+    } else if (currentRange()) label = rangeLabel(index, s.range);
+    if (!label) return '';
+    return `<button class="pchip" data-act="range" aria-label="出題モードを変える">${icon(ic, 16)}<span>${esc(label)}</span></button><span class="grow"></span>`;
+  }
+
+  // 範囲を決めて出題しているときの範囲({ lang, ids })。設定が変わったら作り直す
+  let rangeCache = { key: null, value: null };
+  function currentRange() {
+    const r = settings().range;
+    const key = r ? `${r.list}:${r.start}` : null;
+    if (key !== rangeCache.key) {
+      const ws = rangeWords(index, r);
+      rangeCache = { key, value: ws ? { lang: rangeList(r.list).lang, ids: new Set(ws.map((w) => w.id)) } : null };
+    }
+    return rangeCache.value;
+  }
+
+  // 範囲の語をすべて覚えたら(暗記済み・知ってそう)、一度だけ次の範囲を案内する
+  function noticeRangeDone() {
+    const r = settings().range;
+    if (!r || ses.rangeDone === `${r.list}:${r.start}`) return;
+    const ws = rangeWords(index, r);
+    if (!ws || ws.some((w) => { const s = shownState(S().recs[w.id]); return s !== ST.MASTERED && s !== ST.LIKELY; })) return;
+    ses.rangeDone = `${r.list}:${r.start}`;
+    const nextRange = { list: r.list, start: r.start + ws.length };
+    const hasNext = !!rangeWords(index, nextRange);
+    app.ui.snack(`${rangeLabel(index, r)}は覚えきりました`, {
+      label: hasNext ? '次の範囲へ' : '範囲を選ぶ',
+      run: () => {
+        if (!hasNext) { app.ui.openPage('range'); return; }
+        settings().range = nextRange;
+        store.save();
+        app.feed.start();
+      },
+    });
+  }
+
+  // 復習モードで出せる語がなくなったら(ふだんの出題に切り替わる)、一度だけ知らせる
+  function noticeDrillDone(picked) {
+    if (!picked.drillDone || ses.drillDone) return;
+    ses.drillDone = true;
+    const none = !drillCount(index.words.filter((w) => scopeHas(w)), S().recs, S().hidden);
+    app.ui.snack(none ? '復習できる語(暗記済み・知ってそう)がまだありません' : '復習する語をひととおり出しました。続きはふだんの出題です', {
+      label: 'おまかせに戻す',
+      run: () => {
+        settings().review = false;
+        store.save();
+        app.feed.start();
+      },
+    });
+  }
+  const scopeHas = (w) => settings().scope === 'both' || w.lang === settings().scope;
+
   function ensureItems() {
     while (items.length < active + RENDER_AHEAD + 2) {
       if (pendingWord) {
@@ -274,8 +339,12 @@ export function createFeed(app) {
         now: Date.now(),
         queued: items.slice(Math.max(0, active + 1)).map((it) => it.word.id),
         scope: settings().scope,
+        range: settings().review ? null : currentRange(),
+        drill: !!settings().review,
       });
       if (!picked) break;
+      noticeRangeDone();
+      noticeDrillDone(picked);
       makeItem(picked.word, picked.why);
     }
   }
@@ -366,6 +435,7 @@ export function createFeed(app) {
           <button class="pbtn" data-act="pause" aria-label="一時停止">${icon(userPaused ? 'play' : 'pause')}</button>
           <button class="pbtn pmute" data-act="mute" aria-label="ミュート切替">${icon(muted ? 'volumeOff' : 'volumeUp')}<span class="hint"${bgm.unlocked ? ' hidden' : ''}>タップで音声ON</span></button>
           <span class="grow"></span>
+          ${modeChip()}
           <button class="pbtn only-m" data-act="search" aria-label="検索">${icon('search')}</button>
           <button class="pbtn only-m" data-act="settings" aria-label="設定">${icon('settings')}</button>
         </div>
@@ -461,6 +531,7 @@ export function createFeed(app) {
       replay: false,
       saved: false,
       manual: item.why === 'manual' || !!opts.manual,
+      resumed: !!opts.manual, // ページから戻った・アプリを切り替えて戻った(同じ1枚の続き)
       returned: !!item.seen && !opts.manual,
       item,
     };
@@ -488,6 +559,7 @@ export function createFeed(app) {
       detail: current.detail,
       returned: current.returned,
       manual: current.manual,
+      resumed: current.resumed,
       replay: current.replay,
       saved: current.saved,
       explicit,
@@ -814,6 +886,7 @@ export function createFeed(app) {
       case 'mute': toggleMute(event); break;
       case 'search': app.ui.openPage('library', { focus: true }); break;
       case 'settings': app.ui.openPage('settings'); break;
+      case 'range': app.ui.openPage('range'); break;
       case 'speak':
         if (imp && imp.item === item) imp.replay = true;
         if (canSpeak()) tts.speak(item.word.w, settings().ttsRate);

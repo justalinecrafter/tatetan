@@ -1,17 +1,21 @@
 // 学習の進行をまとめる。DOM に依存しない(フィードとシミュレーションで共用する)。
 //   st:  保存データ(store.state)
-//   ses: 1 回の利用のあいだだけ持つ情報 { counts, recent, flow }
+//   ses: 1 回の利用のあいだだけ持つ情報 { counts, recent, checked, flow, drill }
 import {
   ST, G, classify, apply, memorize, unmark, dislike, pKnown, farEasy, updateLearner, logBox, logReview,
   pushBaseline, thresholds, newLearner, newTrack, thetaOf, dayKey, isNew,
 } from './srs.js';
-import { pickNext, summarizeHabits, boxStages, frontierOf, frontierKey } from './scheduler.js';
+import { pickNext, summarizeHabits, boxStages, frontierOf, frontierKey, DRILL_AGAIN_MAX } from './scheduler.js';
 
 const SESSION_GAP = 30 * 60000; // これ以上空いたら別の利用とみなす
 
 export function newSession() {
-  return { counts: {}, recent: [], flow: { out: [], skip: [], dwell: [] } };
+  // recent: この利用で見た語(新しい順に最大40) / checked: それぞれが「もとから暗記済みの語の確認」だったか
+  return { counts: {}, recent: [], checked: [], flow: { out: [], skip: [], dwell: [] } };
 }
+
+// 復習モードの、この利用での記録(出した語・思い出せなかった語)
+const drillOf = (ses) => ses.drill || (ses.drill = { drilled: {}, missed: {} });
 
 export function learner(st, lang) {
   if (!st.learners[lang]) st.learners[lang] = newLearner();
@@ -48,7 +52,8 @@ function touchSession(st, now) {
 }
 
 // 次の1枚
-export function next(st, ses, index, { now, queued = [], scope, rng }) {
+// drill: true なら復習モード(暗記済み・知ってそうの語だけを、定着に効く順に)
+export function next(st, ses, index, { now, queued = [], scope, range = null, drill = false, rng }) {
   const cur = st.sessions[st.sessions.length - 1];
   // 開いた直後(まだ1枚も数えていない)も新しい利用として扱う
   const habit = habitsOf(st, now);
@@ -65,9 +70,12 @@ export function next(st, ses, index, { now, queued = [], scope, rng }) {
     now,
     card: st.card,
     recent: ses.recent,
+    checked: ses.checked,
     queued,
     sessionCount: ses.counts,
     scope,
+    range,
+    drill: drill ? drillOf(ses) : null,
     habit,
     flow: flowSummary(ses, st.base),
     frontiers: ses.frontiers || (ses.frontiers = {}),
@@ -84,12 +92,16 @@ function wordMetrics(word) {
   };
 }
 
-// 1枚を見終えたときの記録。imp: { frontMs, backMs, revealed, detail, returned, manual, replay, saved, explicit }
+// 1枚を見終えたときの記録。imp: { frontMs, backMs, revealed, detail, returned, manual, replay, saved, explicit, resumed }
+//   resumed: ページを開いて戻った・アプリを切り替えて戻ったあとの見直し(同じ1枚の続きなので、枚数には数えない)
 // 返り値: { ev, fx }  fx は演出の種類
 export function commit(st, ses, index, word, imp, { now, why, rng }) {
   const L = learner(st, word.lang);
   const rec = st.recs[word.id];
   const first = isNew(rec);
+  // もとから暗記済みの語の確認か(この1枚で暗記ボタンを押した語は数えない)
+  const wasMastered = rec?.st === ST.MASTERED && !imp.explicit;
+  const drilling = why === 'drill' || why === 'drill-again';
   const habit = habitsOf(st, now);
   const metrics = wordMetrics(word);
   let ev = { kind: 'none' };
@@ -119,7 +131,8 @@ export function commit(st, ses, index, word, imp, { now, why, rng }) {
     }
     fx = res.fx;
     if (first && ev.y != null && ev.w) updateLearner(L, word, ev.y, ev.w);
-    if (!first && ev.kind === 'grade') {
+    // 復習モードは難しい語・忘れかけの語に寄せて出すので、枠の大きさ・間隔の倍率の調整には使わない
+    if (!first && ev.kind === 'grade' && !drilling) {
       const gap = now - rec.last;
       // 学習枠の大きさは、同じ利用の中での成否で決める
       if (rec.box != null && gap < 2 * 3600000) logBox(L, ev.grade >= G.GOOD);
@@ -127,6 +140,23 @@ export function commit(st, ses, index, word, imp, { now, why, rng }) {
       if (rec.box == null && gap > 12 * 3600000) logReview(L, ev.grade >= G.GOOD);
     }
   }
+
+  // 復習モード: 出した語は、この利用ではもう出さない。思い出せなかった・迷った語は、間を空けてもう一度
+  if (drilling) {
+    const d = drillOf(ses);
+    d.drilled[word.id] = 1;
+    const m = d.missed[word.id];
+    if (imp.explicit || (ev.kind === 'grade' && ev.grade >= G.GOOD)) delete d.missed[word.id];
+    else if (!imp.resumed && ((ev.kind === 'grade' && ev.grade <= G.HARD) || m)) {
+      // 思い出せなかった・迷った(もう一度の語を飛ばした・放置した場合も、少しあとにもう一度。合わせて3回まで)
+      const n = (m?.n || 0) + 1;
+      if (n > DRILL_AGAIN_MAX) delete d.missed[word.id];
+      else d.missed[word.id] = { at: st.card, n };
+    }
+  }
+
+  // 戻ってきたあとの見直しは、離れる前に数えた1枚の続き。枚数・履歴・直近の様子には入れない
+  if (imp.resumed) return { ev, fx };
 
   // 直近の様子
   const { quick } = thresholds(st.base, metrics.chars);
@@ -141,7 +171,11 @@ export function commit(st, ses, index, word, imp, { now, why, rng }) {
   // 一瞬で飛ばした分は、1回の利用で同じ語を出す上限に数えない(覚えかけの語が上限で止まらないように)
   if (ev.kind !== 'skip') ses.counts[word.id] = (ses.counts[word.id] || 0) + 1;
   ses.recent.push(word.id);
-  if (ses.recent.length > 40) ses.recent.shift();
+  ses.checked.push(wasMastered);
+  if (ses.recent.length > 40) {
+    ses.recent.shift();
+    ses.checked.shift();
+  }
   st.history.push({ id: word.id, t: now });
   if (st.history.length > 300) st.history.splice(0, st.history.length - 300);
   const day = dayKey(now);

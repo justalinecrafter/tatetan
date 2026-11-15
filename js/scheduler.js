@@ -4,7 +4,8 @@
 // 易しい順に出す。覚えかけの語は学習枠(既定8語)に入れ、枠が空くまで次の新しい語は出さない。
 // その合間に、日単位の復習・易しい語の確認・背伸びの語・抜き打ち(知ってそう・定着した暗記済み)を混ぜる。
 // 即スワイプされた未出の語は、しばらく出さず(hold)、新しい語の窓の中でも選ばれにくくする。
-import { DAY, BOX_GAPS, retrievability, isDue, overdue, pKnown, rare, isNew } from './srs.js';
+// 復習モード(pickDrill)では、暗記済み・知ってそうの語だけを、定着させるのに効く順に出す。
+import { ST, DAY, BOX_GAPS, retrievability, isDue, overdue, pKnown, rare, isNew } from './srs.js';
 
 const RECENT_LIMIT = 6; // 同じ語を続けない
 const SESSION_CAP = 4; // 1 回の利用で同じ語を流す上限
@@ -18,6 +19,17 @@ const WINDOW_SUM = 6; // 窓に入れる「知らない語」の見込み数
 const WINDOW_TAU = 3;
 const WINDOW_MAX = 150;
 const EASY_PK = 0.85;
+
+// 単語と熟語の比: 直近 30 枚(この利用の中)のうち熟語がこの幅に収まるようにする。
+// 幅を外れそうなら、足りない側から出す。利用の始めは目安の割合を少し混ぜて数える(最初の数枚で偏らないように)
+const PHRASE_BAND = [0.15, 0.4];
+const PHRASE_AIM = 0.28;
+const BALANCE_WINDOW = 30;
+const BALANCE_PRIOR = 6;
+// 暗記済みの語の確認(復習・前倒し・抜き打ち)は、直近 30 枚のうち 2 割まで。
+// 日を空けて開いたときに、暗記済みの確認ばかりにならないように(残りは次の利用へ回る)
+const MASTERED_SHARE = 0.2;
+const MASTERED_WINDOW = 30;
 
 const RATE = {
   box: 0.7,
@@ -112,10 +124,11 @@ function collect(ctx, lang) {
   const g = {
     box: [], boxDue: [], review: [], check: [], ahead: [],
     freshWords: [], freshPhrases: [], loose: [],
-    boxCount: 0, stretchInBox: 0, heads: new Map(), upcoming: 0,
+    boxCount: 0, stretchInBox: 0, heads: new Map(), upcoming: 0, upcomingMastered: 0,
     remPhrases: 0, totalPhrases: 0, unseenWords: 0, totalWords: 0,
   };
   const scan = (w) => {
+    if (ctx.only && !ctx.only.has(w.id)) return; // 範囲を決めて出題しているときは、範囲の語だけ
     const rec = recs[w.id];
     const unseen = isNew(rec);
     if (!hidden[w.id] && rec && rec.box != null) {
@@ -123,7 +136,10 @@ function collect(ctx, lang) {
       if (rec.stretch) g.stretchInBox++;
       if (w.head) g.heads.set(w.head, (g.heads.get(w.head) || 0) + 1);
     }
-    if (!hidden[w.id] && !unseen && rec.box == null && !rare(rec) && rec.due != null && rec.due < now + DAY) g.upcoming++;
+    if (!hidden[w.id] && !unseen && rec.box == null && !rare(rec) && rec.due != null && rec.due < now + DAY) {
+      if (rec.st === ST.MASTERED) g.upcomingMastered++;
+      else g.upcoming++;
+    }
     if (!hidden[w.id]) {
       if (w.kind === 'phrase') {
         g.totalPhrases++;
@@ -205,7 +221,7 @@ function pickReview(list, ctx) {
       const rec = recs[w.id];
       const d = w.d ?? 0.5;
       // 暗記ボタンを押した語・知ってそうと推定した語の最初の確認は少し優先する
-      return (1 + overdue(rec, now, card)) * (1 + 0.5 * (1 - d)) * (saved[w.id] ? 1.4 : 1) * (1 + 0.2 * (rec.lapse || 0)) * (rec.mkc || rec.lkc ? 1.5 : 1);
+      return (1 + overdue(rec, now, card)) * (1 + 0.5 * (1 - d)) * (saved[w.id] ? 1.4 : 1) * (1 + 0.2 * (rec.lapse || 0)) * (rec.mkc || rec.lkc ? 1.5 : 1) * (rec.st === ST.MASTERED ? 0.6 : 1);
     },
     ctx.rng
   );
@@ -266,15 +282,85 @@ function pickFresh(g, ctx) {
   return { word: sample(list, (x) => x.wt, ctx.rng).w, why: 'new' };
 }
 
+// 直近の語(この利用で見た語と、もう並べてある語)
+const recentIds = (ctx, n) => [...ctx.recent, ...ctx.queued].slice(-n);
+
+// 暗記済みの語の確認が、直近の枠を使い切っているか(10 枚に満たないうちは 10 枚として数える)。
+// 見た語は「見たときにもとから暗記済みだったか」、並べてある語はいまの状態で数える
+function masteredFull(ctx) {
+  const queued = ctx.queued.slice(-MASTERED_WINDOW);
+  const seen = Math.max(0, MASTERED_WINDOW - queued.length);
+  const flags = seen ? (ctx.checked || []).slice(-seen) : [];
+  let m = flags.filter(Boolean).length;
+  for (const id of queued) if (ctx.recs[id]?.st === ST.MASTERED) m++;
+  const n = flags.length + queued.length;
+  return m + 1 > MASTERED_SHARE * Math.max(n + 1, 10);
+}
+
+function dropMastered(g, recs) {
+  const keep = (w) => recs[w.id]?.st !== ST.MASTERED;
+  g.review = g.review.filter(keep);
+  g.ahead = g.ahead.filter(keep);
+  g.check = g.check.filter(keep);
+}
+
+// 単語と熟語の比が幅を外れそうなら、足りない側('word' / 'phrase')を返す
+function balanceSide(ctx, lang, g) {
+  if (!g.totalPhrases || !g.totalWords) return null;
+  const ids = recentIds(ctx, 80).filter((id) => id.startsWith(`${lang}:`)).slice(-BALANCE_WINDOW);
+  let p = 0;
+  for (const id of ids) if (id.startsWith(`${lang}:p:`)) p++;
+  const share = (p + PHRASE_AIM * BALANCE_PRIOR) / (ids.length + BALANCE_PRIOR);
+  if (share < PHRASE_BAND[0]) return 'phrase';
+  if (share > PHRASE_BAND[1]) return 'word';
+  return null;
+}
+
+// 単語だけ・熟語だけに絞った候補
+function restrict(g, side) {
+  const phrase = side === 'phrase';
+  const keep = (w) => (w.kind === 'phrase') === phrase;
+  return {
+    ...g,
+    box: g.box.filter(keep),
+    boxDue: g.boxDue.filter(keep),
+    review: g.review.filter(keep),
+    check: g.check.filter(keep),
+    ahead: g.ahead.filter(keep),
+    window: phrase ? [] : g.window,
+    pWindow: phrase ? g.pWindow : [],
+    easy: phrase ? [] : g.easy,
+    pEasy: phrase ? g.pEasy : [],
+    stretch: phrase ? [] : g.stretch,
+    pStretch: phrase ? g.pStretch : [],
+    share: phrase ? 1 : 0,
+  };
+}
+
 function pickFromLang(ctx, lang) {
-  const { rng } = ctx;
   const g = collect(ctx, lang);
   ctx.frontiers[lang] = g.frontier;
   ctx.frontiers[`${lang}:p`] = g.pFrontier;
+  g.share = phraseShare(g, ctx.flow || {});
+  // 暗記済みの語の確認が枠を使い切っていたら、この1枚では出さない。
+  // そのとき暗記済みの語は復習の溜まり具合にも数えない(出せない語のために新しい語を止めない)
+  if (masteredFull(ctx)) dropMastered(g, ctx.recs);
+  else g.upcoming += g.upcomingMastered;
+  // 単語と熟語の比を保つ。足りない側に出せる語がなければ、ふだんどおり選ぶ
+  const side = balanceSide(ctx, lang, g);
+  if (side) {
+    const picked = choose(ctx, restrict(g, side), true);
+    if (picked) return picked;
+  }
+  return choose(ctx, g, false);
+}
+
+// 集めた候補から 1 枚選ぶ。forced: 単語と熟語の比を保つために片側に絞っているとき
+function choose(ctx, g, forced) {
+  const { rng } = ctx;
   const L = ctx.L;
   const habit = ctx.habit || {};
   const flow = ctx.flow || {};
-  g.share = phraseShare(g, flow);
 
   // ① 学習枠の出番
   if (g.boxDue.length) {
@@ -284,7 +370,7 @@ function pickFromLang(ctx, lang) {
 
   // 久しぶりに来たときの準備運動
   if (habit.warmup) {
-    const pool = [...g.review, ...g.boxDue, ...g.check];
+    const pool = [...g.review, ...g.boxDue];
     if (pool.length) return { word: pickReview(pool, ctx), why: 'warmup' };
   }
 
@@ -339,6 +425,7 @@ function pickFromLang(ctx, lang) {
     if (flow.rate < 0.8) throttle *= 0.7;
     else if (flow.rate > 0.85) throttle *= 1.2;
   }
+  if (forced) throttle = Math.max(throttle, 1);
   const pFresh = canFresh ? Math.min(rest, rest * throttle + (flow.bored ? freed : 0)) : 0;
   // 新しい語に使わなかった分は、まず期限の来た復習へ、なければ前倒しへ
   let leftover = Math.max(0, rest - pFresh);
@@ -391,6 +478,87 @@ function pickFromLang(ctx, lang) {
   return null;
 }
 
+// 範囲を決めて出題するとき。範囲の中だけで、学習枠 → 期限の来た復習 → 新しい語(易しい順) → 前倒しの順に回す。
+// 範囲の語を覚えきるのが目的なので、θ による窓・易しい語の確認・背伸びは使わない。
+// 知ってそう・定着した暗記済みの語(抜き打ちだけの語)は、ほかに出す語がないときだけ
+function pickRange(ctx, lang) {
+  const { rng, recs, card } = ctx;
+  const g = collect(ctx, lang);
+  if (g.boxDue.length) {
+    const late = g.boxDue.filter((w) => card - (recs[w.id].dueCard ?? card) >= FORCE_OVERDUE);
+    if (late.length) return { word: pickBoxDue(late, ctx), why: 'box' };
+    if (rng() < RATE.box) return { word: pickBoxDue(g.boxDue, ctx), why: 'box' };
+  }
+  if (g.review.length && rng() < Math.min(0.6, 0.2 + 0.05 * g.review.length)) return { word: pickReview(g.review, ctx), why: 'review' };
+  const fresh = [...g.freshWords, ...g.freshPhrases].sort((a, b) => a.d - b.d);
+  const pickNew = () => ({ word: fresh[Math.floor(rng() * Math.min(3, fresh.length))], why: 'new' });
+  if (fresh.length && g.boxCount < ctx.L.box + 2) return pickNew();
+  if (g.boxDue.length) return { word: pickBoxDue(g.boxDue, ctx), why: 'box' };
+  if (g.review.length) return { word: pickReview(g.review, ctx), why: 'review' };
+  if (g.ahead.length || g.box.length) return { word: pickAhead(g.ahead.length ? g.ahead : g.box, ctx), why: 'ahead' };
+  if (fresh.length) return pickNew();
+  if (g.check.length) return { word: pickCheck(g.check, ctx), why: 'check' };
+  return null;
+}
+
+/* ---------- 復習モード ----------
+  暗記済み・知ってそうの語(ふだんはほとんど出ない語)だけを出す。ランダムではなく、いま復習すると定着に効く語から:
+    忘れかけている(思い出せる見込み R が低い) … 復習の効果がいちばん大きい。忘れていたら学習中へ戻して拾い直せる
+    難しい(レベルより上の語・記録上の難しさが高い) … 安定度が育ちにくく、忘れやすい
+    安定度がまだ低い・前に忘れたことがある … 定着しきっていない
+    推定だけで知ってそうにした語・答えを見てから暗記を押した語 … 本人が確かめきっていない
+  12 時間以内に見た語は、思い出せて当然で効果が薄いので後回し(1 時間以内に見た語は出さない)。1 回の利用で同じ語は 1 度だけ。
+  思い出せなかった・迷った語は、6 枚ほど空けてもう一度出す(1 語につき 3 回まで。思い出せたら終わり) */
+const DRILL_AGAIN_GAP = 6;
+export const DRILL_AGAIN_MAX = 3;
+const DRILL_TOP = 5; // 点数の高い順にこの数の中から選ぶ(毎回同じ並びにならないように)
+const DRILL_FRESH = 3600000; // さっき見た語(出し終えたあとのふだんの出題で知ってそうになった語など)は復習に回さない
+
+export const drillable = (rec) => !!rec && (rec.st === ST.MASTERED || rec.st === ST.LIKELY);
+
+// 復習モードでの優先度(大きいほど先に出す)
+export function drillScore(rec, w, L, now, saved = false) {
+  const risk = 1 - retrievability(rec, now);
+  const hard = 0.5 * (1 - (L ? pKnown(L, w) : 0.5)) + 0.5 * Math.min(1, Math.max(0, ((rec.d ?? 5) - 1) / 9));
+  const weak = 1 / (1 + (rec.s || 0) / 15);
+  const lapses = Math.min(rec.lapse || 0, 3) / 3;
+  const unsure = rec.st === ST.LIKELY ? 1 : rec.mk === 2 ? 0 : 0.5;
+  let score = 0.1 + 1.5 * risk + 0.8 * hard + 0.4 * weak + 0.4 * lapses + 0.25 * unsure;
+  if (saved) score *= 1.3;
+  if (now - (rec.last ?? 0) < DAY / 2) score *= 0.15;
+  else if ((rec.mkc || rec.lkc) && rec.due > now) score *= 0.6; // 最初の確かめがもうすぐふだんの出題で来る
+  return score;
+}
+
+// 復習モードで出せる語(暗記済み・知ってそう)の数
+export function drillCount(words, recs, hidden = {}) {
+  let n = 0;
+  for (const w of words) if (!hidden[w.id] && drillable(recs[w.id])) n++;
+  return n;
+}
+
+// ctx.drill: { drilled: { id: 1 }(この利用で出した語), missed: { id: { at: 枚数, n: 回数 } }(思い出せなかった語) }
+function pickDrill(ctx, langs) {
+  const { index, recs, hidden, saved, learners, now, card, rng, drill } = ctx;
+  const blocked = new Set([...ctx.recent.slice(-RECENT_LIMIT), ...ctx.queued]);
+  const inScope = (w) => w && langs.includes(w.lang) && !hidden[w.id] && !blocked.has(w.id);
+  // この利用で思い出せなかった語を、間を空けてもう一度(古いものから)
+  const again = Object.entries(drill.missed)
+    .filter(([id, m]) => card - m.at >= DRILL_AGAIN_GAP && inScope(index.byId.get(id)))
+    .sort((a, b) => a[1].at - b[1].at);
+  if (again.length) return { word: index.byId.get(again[0][0]), why: 'drill-again' };
+  const cands = [];
+  for (const w of index.words) {
+    const rec = recs[w.id];
+    if (!drillable(rec) || drill.drilled[w.id] || !inScope(w) || now - (rec.last ?? 0) < DRILL_FRESH) continue;
+    cands.push({ w, score: drillScore(rec, w, learners[w.lang], now, !!saved[w.id]) });
+  }
+  if (!cands.length) return null;
+  cands.sort((a, b) => b.score - a.score);
+  const top = cands.slice(0, DRILL_TOP);
+  return { word: sample(top, (x) => x.score * x.score, rng).w, why: 'drill' };
+}
+
 function fallback(ctx, lang) {
   const g = collect(ctx, lang);
   if (!g.loose.length) return null;
@@ -405,11 +573,28 @@ function fallback(ctx, lang) {
   return { word, why: 'fallback' };
 }
 
-// ctx: { index, recs, saved, hidden, learners, now, card, recent, queued, sessionCount, scope, habit, flow, rng }
+// ctx: { index, recs, saved, hidden, learners, now, card, recent, checked, queued, sessionCount, scope, range, drill, habit, flow, rng }
+// range: { lang, ids: Set } のとき、その範囲の語だけを出す
+// drill: 復習モードのとき、この利用での記録(pickDrill)。出せる語がなくなったら、ふだんどおり選んで drillDone を付ける
 export function pickNext(ctx) {
   const rng = ctx.rng || Math.random;
-  const langs = ctx.scope === 'both' ? (rng() < 0.5 ? ['en', 'kb'] : ['kb', 'en']) : [ctx.scope];
   const frontiers = ctx.frontiers || {};
+  if (ctx.drill) {
+    const langs = ctx.scope === 'both' ? ['en', 'kb'] : [ctx.scope];
+    const picked = pickDrill({ ...ctx, rng }, langs);
+    if (picked) return picked;
+    const rest = pickNext({ ...ctx, drill: null });
+    return rest && { ...rest, drillDone: true };
+  }
+  if (ctx.range) {
+    const { lang, ids } = ctx.range;
+    const base = { ...ctx, rng, frontiers, frontierOf: (l) => frontiers[l], only: ids, L: ctx.learners[lang] };
+    const picked = pickRange(base, lang) || fallback(base, lang);
+    if (picked) return picked;
+    const any = [...ids].map((id) => ctx.index.byId.get(id)).filter((w) => w && !ctx.hidden[w.id]);
+    return any.length ? { word: any[Math.floor(rng() * any.length)], why: 'fallback' } : null;
+  }
+  const langs = ctx.scope === 'both' ? (rng() < 0.5 ? ['en', 'kb'] : ['kb', 'en']) : [ctx.scope];
   const base = { ...ctx, rng, frontiers, frontierOf: (l) => frontiers[l] };
   for (const lang of langs) {
     if (!ctx.learners[lang]) continue;

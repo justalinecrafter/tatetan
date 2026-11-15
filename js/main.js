@@ -88,6 +88,34 @@ function buildChrome(app) {
   });
 }
 
+// アプリを開いていた時間を数える。画面に出ている間だけ、15秒ごとに足す。
+// スリープなどで時計が大きく飛んだ分は数えない(1回に30秒まで)
+function trackOpenTime(store) {
+  let last = document.hidden ? 0 : Date.now();
+  const tick = () => {
+    const now = Date.now();
+    if (last) {
+      const dt = Math.min(now - last, 30000);
+      if (dt > 0) store.state.openMs = (store.state.openMs || 0) + dt;
+    }
+    last = document.hidden ? 0 : now;
+  };
+  setInterval(() => {
+    if (document.hidden) return;
+    tick();
+    store.save();
+  }, 15000);
+  document.addEventListener('visibilitychange', () => {
+    tick();
+    store.save();
+  });
+  window.addEventListener('pagehide', () => {
+    tick();
+    store.flush();
+  });
+  return tick;
+}
+
 async function boot() {
   const splash = document.getElementById('splash');
   const store = createStore();
@@ -102,6 +130,7 @@ async function boot() {
   ]);
 
   const app = { store, index, manifest };
+  app.tickOpenTime = trackOpenTime(store);
   app.bgm = new Bgm(manifest, () => store.state.settings);
   app.tts = new Tts((busy) => app.bgm.duck(busy), app.bgm);
   app.tts.setFiles(voices);
@@ -143,6 +172,11 @@ async function boot() {
   app.feed = createFeed(app);
   app.ui = createUI(app);
   app.onboarding = createOnboarding(app);
+  // 学習記録を保存できなくなったら知らせる(気づかないまま記録が消えないように)
+  store.onSaveFail = () => app.ui.snack('学習記録を保存できません。端末の空き容量を確認してください', {
+    label: '詳しく',
+    run: () => app.ui.openPage('you'),
+  });
   app.install = createInstall(app);
 
   // 設定で出題内容を変えたら、フィードへ戻ったときに流し直す

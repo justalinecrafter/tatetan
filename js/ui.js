@@ -1,10 +1,11 @@
 // シート、スナックバー、各ページ。
 import { icon, logo } from './icons.js';
 import { ST, ST_LABEL, SHOWN_STATES, shownState, retrievability, settled, isNew } from './srs.js';
-import { dueCount } from './scheduler.js';
 import { markExample, videoCredit } from './feed.js';
-import { streak, todayKey } from './store.js';
+import { drillCount } from './scheduler.js';
+import { todayKey } from './store.js';
 import { DEVICE } from './device.js';
+import { RANGE_SIZE, RANGE_LISTS, rangeList, rangeSource, rangeLabel } from './words.js';
 import { PWA_ON, storageUsage, clearMedia } from './pwa.js';
 import { DEFAULT_LIST, LIST_NAME_MAX, listById, inList, addTo, removeFrom, createList, renameList, deleteList, listWords } from './lists.js';
 
@@ -12,6 +13,15 @@ const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 const STATUS_ORDER = SHOWN_STATES;
+
+// アプリを開いていた時間(数字を大きく、単位を小さく)。10時間を超えたら時間だけ(スマホの幅に収まるように)
+function openTimeHtml(ms) {
+  const m = Math.floor((ms || 0) / 60000);
+  const h = Math.floor(m / 60);
+  if (!h) return `${m}<small>分</small>`;
+  if (h >= 10) return `${h.toLocaleString()}<small>時間</small>`;
+  return `${h}<small>時間</small>${m % 60}<small>分</small>`;
+}
 const KIND_GROUPS = [
   ['en-word', '英単語', (w) => w.lang === 'en' && w.kind === 'word'],
   ['en-phrase', '英熟語', (w) => w.lang === 'en' && w.kind === 'phrase'],
@@ -49,7 +59,11 @@ export function createUI(app) {
   const layers = [];
   let snackTimer = 0;
   let currentPage = null;
+  let currentOpts = {};
   let pageClose = null;
+  // 開いた順のページ(前の画面へ戻るため)。1 件ごとに戻るボタン用の重なりも積む
+  const pageStack = [];
+  const PAGE_STACK_MAX = 30;
   let sheetClose = null;
 
   /* ---------- 戻るボタン対応 ---------- */
@@ -386,6 +400,8 @@ export function createUI(app) {
   /* ---------- 作成メニュー(中央の +) ---------- */
   function openCreate() {
     const body = `
+      ${row('review', 'replay', S().settings.review ? '復習モードをやめる' : '復習モード', S().settings.review ? 'おまかせの出題に戻します' : '暗記済み・知ってそうの語を、忘れかけ・難しい語から出題します')}
+      ${row('range', 'list', '範囲を決めて出題', '100語ずつに区切った範囲から選びます')}
       ${row('test', 'quiz', '実力テストを受け直す', '簡単な単語から流す基準を測り直します')}
       ${row('library', 'list', '単語帳で探す')}
       ${row('settings', 'settings', '出題の種類を変える')}`;
@@ -396,6 +412,8 @@ export function createUI(app) {
           if (!r) return;
           closeSheetNow();
           if (r.dataset.row === 'test') app.onboarding.startTest();
+          else if (r.dataset.row === 'review') setMode({ review: !S().settings.review });
+          else if (r.dataset.row === 'range') openPage('range');
           else if (r.dataset.row === 'library') openPage('library', { focus: true });
           else openPage('settings');
         });
@@ -413,8 +431,21 @@ export function createUI(app) {
     });
   }
 
-  function openPage(name, opts = {}) {
+  // replace: 前の画面として積まずに、いまの画面を差し替える
+  function openPage(name, opts = {}, { replace = false } = {}) {
     snackEl.classList.remove('on');
+    if (currentPage && !replace && !(name === currentPage && sameOpts(opts, currentOpts))) {
+      // いまの画面を「前の画面」として積む(戻るボタン・端末の戻るで、ここへ戻る)
+      const prev = { name: currentPage, opts: restorable(currentOpts), scroll: page.scrollTop };
+      const back = () => {
+        const i = pageStack.indexOf(back);
+        if (i >= 0) pageStack.splice(i, 1);
+        showPage(prev.name, prev.opts, prev.scroll);
+      };
+      pageStack.push(back);
+      pushLayer(back);
+      if (pageStack.length > PAGE_STACK_MAX) removeLayer(pageStack.shift());
+    }
     if (!currentPage) {
       app.feed.suspend();
       feedView.hidden = true;
@@ -422,6 +453,7 @@ export function createUI(app) {
       pageClose = () => {
         pageClose = null;
         currentPage = null;
+        currentOpts = {};
         page.hidden = true;
         page.replaceChildren();
         feedView.hidden = false;
@@ -433,17 +465,34 @@ export function createUI(app) {
       };
       pushLayer(pageClose);
     }
+    showPage(name, opts, 0);
+  }
+
+  function showPage(name, opts, scroll) {
     currentPage = name;
+    currentOpts = opts;
     setNav(name);
     page.scrollTop = 0;
     RENDER[name](opts);
+    if (scroll) page.scrollTop = scroll;
   }
+  const sameOpts = (a, b) => JSON.stringify(a || {}) === JSON.stringify(b || {});
+  // 戻ったときに繰り返さない指定(検索語の上書き・入力欄へのフォーカス)は外す
+  const restorable = ({ q, focus, ...rest } = {}) => rest;
 
+  // ページをすべて閉じてフィードへ
   function closePage() {
     if (!pageClose) return;
+    while (pageStack.length) removeLayer(pageStack.pop());
     const close = pageClose;
     removeLayer(close);
     close();
+  }
+
+  // 前の画面へ(なければフィードへ)
+  function goBack() {
+    if (pageStack.length) popLayer();
+    else closePage();
   }
 
   function pageHead(title, right = '') {
@@ -569,12 +618,12 @@ export function createUI(app) {
       openNameSheet('新しいリスト', '', (name) => {
         const l = createList(st, name);
         store.save();
-        renderSaved({ list: l.id });
+        openPage('saved', { list: l.id });
       })
     );
     page.querySelector('.llist').addEventListener('click', (e) => {
       const c = e.target.closest('[data-open-list]');
-      if (c) renderSaved({ list: c.dataset.openList });
+      if (c) openPage('saved', { list: c.dataset.openList });
     });
   }
 
@@ -582,7 +631,7 @@ export function createUI(app) {
     const st = S();
     const words = listWords(l).map((id) => index.byId.get(id)).filter(Boolean);
     page.scrollTop = 0;
-    page.innerHTML = `<header class="page-head"><button class="icon-btn" data-to-lists aria-label="リストの一覧へ">${icon('back')}</button><h1>${esc(l.name)}</h1><span class="grow"></span>
+    page.innerHTML = `<header class="page-head"><button class="icon-btn" data-back data-to-lists aria-label="戻る">${icon('back')}</button><h1>${esc(l.name)}</h1><span class="grow"></span>
         ${l.id === DEFAULT_LIST ? '' : `<button class="icon-btn" data-list-menu aria-label="リストの操作">${icon('more')}</button>`}</header>
       <div class="page-in">
         <p class="count">${words.length}語</p>
@@ -594,7 +643,6 @@ export function createUI(app) {
       if (currentPage === 'saved' && now && page.querySelector('[data-to-lists]')) renderList(now);
     };
     bindRows(page.querySelector('#savedList'), redraw);
-    page.querySelector('[data-to-lists]').addEventListener('click', () => renderSaved());
     page.querySelector('[data-list-menu]')?.addEventListener('click', () => {
       openSheet(l.name, `${row('rename', 'settings', '名前を変える')}${row('delete', 'block', 'リストを削除', '中の単語の学習記録は消えません')}`, {
         onReady(node) {
@@ -612,7 +660,9 @@ export function createUI(app) {
               deleteList(st, l.id);
               store.save();
               snack('リストを削除しました');
-              renderSaved();
+              // 一覧から開いたなら一覧へ戻る。そうでなければ、この画面を一覧に差し替える
+              if (pageStack.length) goBack();
+              else openPage('saved', {}, { replace: true });
             }
           });
         },
@@ -653,7 +703,7 @@ export function createUI(app) {
       if (!total) return '';
       return `<div class="st-table"><h3>${label}<small>${total}語</small></h3>${STATUS_ORDER.map((s) => `<div><span class="st-t-${s}">${ST_LABEL[s]}</span><b>${c[s]}</b></div>`).join('')}</div>`;
     };
-    const due = dueCount(index.words.filter((w) => st.settings.scope === 'both' || w.lang === st.settings.scope), st.recs, now, st.card);
+    app.tickOpenTime?.();
     const langs = st.settings.scope === 'both' ? ['en', 'kb'] : [st.settings.scope];
     const groups = KIND_GROUPS.filter(([id]) => langs.includes(id.slice(0, 2)));
     page.innerHTML = `
@@ -662,13 +712,15 @@ export function createUI(app) {
           <span class="you-av">${icon('person', 40)}</span>
           <div><h1>ゲストさん</h1><p>@tatetan ・ データはこの端末だけに保存</p></div>
         </div>
+        ${store.saveFailed ? '<p class="warn">学習記録を保存できていません。このまま閉じると、今回の分が消えます。端末やブラウザの空き容量を確認し、設定の「バックアップを書き出す」で記録を残してください。</p>' : ''}
         <div class="stat-row">
-          <div><b>${st.days[todayKey(now)] || 0}</b><span>今日の枚数</span></div>
-          <div><b>${streak(st.days, now)}</b><span>連続日数</span></div>
-          <div><b>${due}</b><span>復習待ち</span></div>
+          <div><b>${(st.days[todayKey(now)] || 0).toLocaleString()}</b><span>今日の枚数</span></div>
+          <div><b>${(st.card || 0).toLocaleString()}</b><span>今までの枚数</span></div>
+          <div><b>${openTimeHtml(st.openMs)}</b><span>アプリを開いた時間</span></div>
         </div>
         ${groups.map(statusLine).join('')}
         <div class="rows">
+          ${row('range', st.settings.review ? 'replay' : 'list', '出題モード', modeText(st.settings))}
           ${row('history', 'history', '履歴')}
           ${row('saved', 'bookmark', '保存したリスト')}
           ${row('library', 'list', '単語帳')}
@@ -723,7 +775,8 @@ export function createUI(app) {
     page.innerHTML = `${pageHead('設定')}
       <div class="page-in settings">
         <h3>出題</h3>
-        ${select('setScope', '出題する単語', s.scope, [['en', '英単語のみ'], ['kb', '古典単語のみ'], ['both', '両方']])}
+        <button class="set set-btn" id="setRange"><span>出題モード<small>${s.review ? '復習モード(暗記済み・知ってそうの語を定着させる)' : s.range ? `${esc(rangeLabel(index, s.range))}だけから出題中` : 'おまかせ(実力に合わせて全体から)'}</small></span>${icon(s.review ? 'replay' : 'list', 20)}</button>
+        ${s.range ? '' : select('setScope', '出題する単語', s.scope, [['en', '英単語のみ'], ['kb', '古典単語のみ'], ['both', '両方']])}
         ${select('setDir', '英単語の出題順', s.reverse ? 'rev' : 'std', [['std', '英語 → 日本語'], ['rev', '日本語 → 英語']])}
         <button class="set set-btn" id="setTest"><span>実力テストを受け直す<small>簡単な単語から流す基準を測り直します</small></span>${icon('quiz', 20)}</button>
         <h3>音</h3>
@@ -752,7 +805,8 @@ export function createUI(app) {
     });
     const restartLater = () => { app.pendingRestart = true; };
 
-    change('setScope', (t) => { s.scope = t.value; restartLater(); });
+    if (!s.range) change('setScope', (t) => { s.scope = t.value; restartLater(); });
+    $('setRange').addEventListener('click', () => openPage('range'));
     change('setDir', (t) => { s.reverse = t.value === 'rev'; restartLater(); });
     change('setTts', (t) => { s.tts = t.checked; });
     change('setTtsEx', (t) => { s.ttsExample = t.checked; });
@@ -823,7 +877,118 @@ export function createUI(app) {
       </div>`;
   }
 
+  /* ---------- 出題範囲 ---------- */
+  // 各リストを易しい順に 100 語ずつ。覚えた語(暗記済み・知ってそう)の割合を棒で見せる
+  // 出題モードの表示名
+  const modeText = (set) => (set.review ? '復習モード' : set.range ? rangeLabel(index, set.range) : 'おまかせ');
+  const inScope = (w) => S().settings.scope === 'both' || w.lang === S().settings.scope;
+
+  // 出題モードを切り替える(おまかせ / 復習モード / 範囲)。ページを開いているなら、閉じたときに流し直す
+  function setMode({ review = false, range = null }) {
+    const set = S().settings;
+    if (review && !drillCount(index.words.filter(inScope), S().recs, S().hidden)) {
+      snack('復習できる語(暗記済み・知ってそう)がまだありません');
+      return false;
+    }
+    set.review = review;
+    set.range = review ? null : range;
+    store.save();
+    snack(review ? '復習モードにしました。忘れかけ・難しい語から出します' : set.range ? `${rangeLabel(index, set.range)} から出題します` : 'おまかせの出題に戻しました');
+    if (currentPage) app.pendingRestart = true;
+    else app.feed.start();
+    return true;
+  }
+
+  // 出題モードのページ。YouTube の再生リストの並びに寄せる:
+  // 上におまかせ・復習モード、下に範囲(チップで英単語・英熟語・古典単語を切り替え、100語ずつを再生リストのように並べる)
+  let rangeTab = null;
+  function renderRange() {
+    const st = S();
+    const set = st.settings;
+    const cur = set.review ? null : set.range;
+    const nDrill = drillCount(index.words.filter(inScope), st.recs, st.hidden);
+    const lists = RANGE_LISTS.filter((l) => rangeSource(index, l).length);
+    if (!lists.some((l) => l.id === rangeTab)) rangeTab = cur?.list || lists[0]?.id;
+    const playing = `<span class="yt-over">${icon('bars', 20)}再生中</span>`;
+
+    const card = (attrs, thumb, title, meta, on, off = false) =>
+      `<button class="lcard rg-card${on ? ' on' : ''}" ${attrs}${off ? ' disabled' : ''}>
+        ${thumb}
+        <span class="wmain"><b>${title}</b><span class="wmean">${meta}</span></span>
+      </button>`;
+    const modeThumb = (cls, ic, on) => `<span class="lthumb ${cls}${on ? ' playing' : ''}">${icon(ic, 32)}${on ? playing : ''}</span>`;
+    const modes = [
+      card('data-mode="auto"', modeThumb('av-auto', 'feedFill', !set.review && !cur), 'おまかせ', '実力に合わせて全体から', !set.review && !cur),
+      card('data-mode="review"', modeThumb('av-review', 'replay', set.review), '復習モード',
+        nDrill ? `暗記済み・知ってそう ${nDrill.toLocaleString()}語` : '暗記済み・知ってそうの語がまだありません', set.review, !nDrill),
+    ].join('');
+
+    const rangeCard = (list, start, ws) => {
+      let done = 0;
+      let learning = 0;
+      for (const w of ws) {
+        const s = shownState(st.recs[w.id]);
+        if (s === ST.MASTERED || s === ST.LIKELY) done++;
+        else if (s === ST.LEARNING) learning++;
+      }
+      const on = !!cur && cur.list === list.id && cur.start === start;
+      const full = done === ws.length;
+      const prog = done ? `<span class="yt-prog"><i style="width:${Math.round((done / ws.length) * 100)}%"></i></span>` : '';
+      const count = full ? `${icon('check', 14)}覚えきった` : `${ws.length}語`;
+      const thumb = `<span class="lthumb ${THUMB(ws[0])[1]}${prog ? ' has-prog' : ''}${on ? ' playing' : ''}"><b>${esc(ws[0].w)}</b><span class="lcount">${count}</span>${on ? playing : ''}${prog}</span>`;
+      const meta = done || learning ? `覚えた ${done}語${learning ? ` ・ 学習中 ${learning}語` : ''}` : 'まだ始めていません';
+      return card(`data-list="${list.id}" data-start="${start}"`, thumb, `${esc(list.label)} ${start + 1}〜${start + ws.length}`, meta, on);
+    };
+    const rangeCards = () => {
+      const list = rangeList(rangeTab);
+      if (!list) return '';
+      const all = rangeSource(index, list);
+      const out = [];
+      for (let s = 0; s < all.length; s += RANGE_SIZE) out.push(rangeCard(list, s, all.slice(s, s + RANGE_SIZE)));
+      return out.join('');
+    };
+    const chips = () => lists.map((l) => `<button class="chip${l.id === rangeTab ? ' on' : ''}" data-tab="${l.id}">${esc(l.label)}</button>`).join('');
+
+    page.innerHTML = `${pageHead('出題モード')}
+      <div class="page-in range">
+        <div class="llist">${modes}</div>
+        <h2 class="yt-sec">範囲<small>100語ずつ・易しい順</small></h2>
+        <div class="chips rg-chips">${chips()}</div>
+        <div class="llist" id="rgList">${rangeCards()}</div>
+      </div>`;
+
+    // 選んでいる範囲が下のほうなら、そこまで送る
+    const onCard = page.querySelector('#rgList .rg-card.on');
+    if (onCard && onCard.getBoundingClientRect().bottom > page.clientHeight) onCard.scrollIntoView({ block: 'center' });
+
+    const apply = (next) => {
+      if (setMode(next)) closePage();
+    };
+    page.querySelector('.range').addEventListener('click', (e) => {
+      const tab = e.target.closest('[data-tab]');
+      if (tab) {
+        if (tab.dataset.tab === rangeTab) return;
+        rangeTab = tab.dataset.tab;
+        page.querySelector('.rg-chips').innerHTML = chips();
+        page.querySelector('#rgList').innerHTML = rangeCards();
+        return;
+      }
+      const c = e.target.closest('.rg-card');
+      if (!c || c.disabled) return;
+      if (c.dataset.mode) {
+        const review = c.dataset.mode === 'review';
+        if (review === !!set.review && !cur) closePage();
+        else apply({ review });
+        return;
+      }
+      const range = { list: c.dataset.list, start: Number(c.dataset.start) };
+      if (cur && cur.list === range.list && cur.start === range.start) closePage();
+      else apply({ range });
+    });
+  }
+
   const RENDER = {
+    range: renderRange,
     library: renderLibrary,
     saved: renderSaved,
     history: renderHistory,

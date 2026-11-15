@@ -1,6 +1,7 @@
 // 単語データの読み込み。データ形式は README.md を参照。
 //
-// 単語リスト・熟語リストとも「並び順 = 大まかな難易度順」。読み込み時に各語へリスト上の位置 d (0〜1) を付ける。
+// 単語リスト・熟語リスト・古典単語リストとも「並び順 = 難易度順」(易しい順)。読み込み時に各語へリスト上の位置 d (0〜1) を付ける。
+// 範囲を決めて出題するモードでは、この順に 100 語ずつ区切る(RANGE_SIZE)。
 // 単語と熟語は別々の道として扱う(位置はそれぞれのリストの中で数える)。
 
 export const LANG_NAME = { en: '英単語', kb: '古典単語' };
@@ -90,6 +91,33 @@ export function buildIndex(words) {
     confusables: (id) => confusables.get(id) || null,
     langs: () => [...new Set(words.map((w) => w.lang))],
   };
+}
+
+/* ---------- 範囲を決めて出題する ----------
+  各リストを易しい順に 100 語ずつ区切る。範囲は { list, start }(start は 0, 100, 200 …) */
+export const RANGE_SIZE = 100;
+export const RANGE_LISTS = [
+  { id: 'en-w', lang: 'en', kind: 'word', label: '英単語' },
+  { id: 'en-p', lang: 'en', kind: 'phrase', label: '英熟語' },
+  { id: 'kb', lang: 'kb', kind: 'word', label: '古典単語' },
+];
+export const rangeList = (id) => RANGE_LISTS.find((l) => l.id === id) || null;
+export const rangeSource = (index, list) => (list.kind === 'phrase' ? index.phrases(list.lang) : index.ordered(list.lang));
+
+// 範囲の語。範囲が正しくなければ null
+export function rangeWords(index, range) {
+  const list = range && rangeList(range.list);
+  if (!list) return null;
+  const all = rangeSource(index, list);
+  if (!(range.start >= 0) || range.start >= all.length) return null;
+  return all.slice(range.start, range.start + RANGE_SIZE);
+}
+
+export function rangeLabel(index, range) {
+  const list = range && rangeList(range.list);
+  const ws = rangeWords(index, range);
+  if (!ws) return '';
+  return `${list.label} ${range.start + 1}〜${range.start + ws.length}`;
 }
 
 export async function loadWords() {

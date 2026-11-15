@@ -8,6 +8,8 @@ const OLD_KEYS = ['tatetan.v2', 'tatetan.v1'];
 
 export const DEFAULT_SETTINGS = {
   scope: 'en', // en | kb | both
+  range: null, // 範囲を決めて出題するとき { list: 'en-w' | 'en-p' | 'kb', start: 0, 100, … }。null ならおまかせ
+  review: false, // 復習モード(暗記済み・知ってそうの語だけを、定着に効く順に)。範囲とは同時に使わない
   reverse: false, // true: 日本語 → 英語
   tts: true,
   ttsExample: true,
@@ -34,8 +36,9 @@ export function freshState() {
     hidden: {},
     history: [],
     base: [],
-    card: 0,
+    card: 0, // これまでに見た枚数(出題の時計にも使う)
     days: {},
+    openMs: 0, // アプリを開いていた時間の合計(画面に出ている間だけ)
     sessions: [],
   };
 }
@@ -52,6 +55,11 @@ function normalize(data) {
     lists: normalizeLists(data),
   };
   syncSaved(st);
+  const r = st.settings.range;
+  if (r && (typeof r !== 'object' || typeof r.list !== 'string' || !Number.isInteger(r.start) || r.start < 0)) st.settings.range = null;
+  st.settings.review = st.settings.review === true;
+  if (st.settings.review) st.settings.range = null;
+  if (!(st.openMs >= 0)) st.openMs = 0;
   return st;
 }
 
@@ -59,6 +67,7 @@ export function createStore() {
   let state = freshState();
   let timer = null;
   let broken = false;
+  let onFail = null; // 保存できなくなったときに一度だけ呼ぶ(画面で知らせるため)
 
   try {
     const raw = localStorage.getItem(KEY);
@@ -98,7 +107,10 @@ export function createStore() {
       localStorage.setItem(KEY, JSON.stringify(state));
       broken = false;
     } catch {
+      // 容量不足・保存を禁じる設定など。記録は開いている間しか残らない
+      const first = !broken;
       broken = true;
+      if (first) onFail?.();
     }
   };
 
@@ -108,6 +120,9 @@ export function createStore() {
     },
     get saveFailed() {
       return broken;
+    },
+    set onSaveFail(fn) {
+      onFail = fn;
     },
     save() {
       if (!timer) timer = setTimeout(flush, 500);
@@ -126,7 +141,8 @@ export function createStore() {
       flush();
     },
     reset() {
-      const settings = state.settings;
+      // 音や表示の設定は残す。出題モード(復習モード・範囲)は記録と一緒に最初へ戻す
+      const settings = { ...state.settings, review: false, range: null };
       state = freshState();
       state.settings = settings;
       flush();
