@@ -20,7 +20,7 @@ const voice = args.includes('--voice') ? args[args.indexOf('--voice') + 1] : 'Mi
 
 // 読み上げる文: 見出し語と、答えを開いたときに読む最初の例文
 const texts = new Map();
-for (const f of ['en-words.jsonl', 'en-phrases.jsonl']) {
+for (const f of ['en-words.jsonl', 'leap-words.jsonl', 'en-phrases.jsonl']) {
   for (const line of readFileSync(join(root, 'data', 'words', f), 'utf8').split('\n')) {
     if (!line.trim()) continue;
     const w = JSON.parse(line);

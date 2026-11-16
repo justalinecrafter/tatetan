@@ -120,20 +120,60 @@ export function rangeLabel(index, range) {
   return `${list.label} ${range.start + 1}〜${range.start + ws.length}`;
 }
 
-export async function loadWords() {
+/* ---------- 英単語のリスト ----------
+  設定で選んだ 1 つだけを読み込む(index.json の en の、key に書いたファイル)。
+  LEAP の並びは『必携英単語 LEAP』に合わせ、意味・例文は縦単の語をそのまま使う(ない語だけ独自に作成)。
+  LEAP の語のうち縦単にもある語は、縦単での位置 od を持つ(リストを切り替えたときに θ を移すため) */
+export const EN_LISTS = [
+  { id: 'own', key: 'words', label: '縦単オリジナル(3000語)' },
+  { id: 'leap', key: 'leap', label: 'LEAP(2300語)' },
+];
+const enListOf = (id) => EN_LISTS.find((l) => l.id === id) || EN_LISTS[0];
+
+async function fetchList(file, lang, kind) {
+  const r = await fetch(`data/words/${file}`);
+  if (!r.ok) throw new Error(`${file} を読み込めませんでした`);
+  return parseJsonl(await r.text(), lang, kind);
+}
+
+async function fetchFiles() {
   const res = await fetch('data/words/index.json');
   if (!res.ok) throw new Error('単語の一覧を読み込めませんでした');
-  const index = await res.json();
+  return res.json();
+}
+
+export async function loadWords(enList = 'own') {
+  const files = await fetchFiles();
+  const skip = new Set(EN_LISTS.map((l) => l.key).filter((k) => k !== enListOf(enList).key));
   const jobs = [];
-  for (const [lang, files] of Object.entries(index)) {
-    for (const [kind, f] of Object.entries(files)) {
-      jobs.push(
-        fetch(`data/words/${f}`).then(async (r) => {
-          if (!r.ok) throw new Error(`${f} を読み込めませんでした`);
-          return parseJsonl(await r.text(), lang, kind === 'phrases' ? 'phrase' : 'word');
-        })
-      );
+  for (const [lang, set] of Object.entries(files)) {
+    for (const [key, f] of Object.entries(set)) {
+      if (lang === 'en' && skip.has(key)) continue;
+      jobs.push(fetchList(f, lang, key === 'phrases' ? 'phrase' : 'word'));
     }
   }
-  return buildIndex((await Promise.all(jobs)).flat());
+  // LEAP には熟語が少し入っている。単語のリストにある熟語は熟語のリストから外す(同じ語を二度出さない)
+  const all = (await Promise.all(jobs)).flat();
+  const head = (w) => `${w.lang}:${w.w.toLowerCase()}`;
+  const asWord = new Set(all.filter((w) => w.kind === 'word').map(head));
+  const index = buildIndex(all.filter((w) => w.kind === 'word' || !asWord.has(head(w))));
+  index.enList = enListOf(enList).id;
+  return index;
 }
+
+// LEAP の単語(位置 d 付き)。いま LEAP を読み込んでいればそれを、なければファイルから
+export async function leapWords(index) {
+  if (index.enList === 'leap') return index.ordered('en');
+  const files = await fetchFiles();
+  return buildIndex(await fetchList(files.en.leap, 'en', 'word')).ordered('en');
+}
+
+// 出題の対象の語か(言語と、英熟語を出すか)
+export const inScope = (w, set) => (set.scope === 'both' || w.lang === set.scope) && (w.kind === 'word' || set.phrases !== false);
+
+// いまの出題モードで選んでいる範囲(おまかせと復習モードで別々に持つ)
+export const modeRange = (set) => (set.review ? set.reviewRange : set.range);
+
+// 復習モードで出す語の候補(範囲を決めていればその範囲の語、なければ出題の対象の語)
+export const drillPool = (index, set, range = set.reviewRange) =>
+  (range ? rangeWords(index, range) || [] : index.words.filter((w) => inScope(w, set)));

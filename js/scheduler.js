@@ -199,7 +199,7 @@ function collect(ctx, lang) {
     else if (card - (rec.lastCard ?? -Infinity) >= AHEAD_MIN_CARDS && !rec.mkc && !rec.lkc) g.ahead.push(w);
   };
   for (const w of index.ordered(lang)) scan(w);
-  for (const w of index.phrases(lang)) scan(w);
+  if (!ctx.wordsOnly) for (const w of index.phrases(lang)) scan(w);
 
   // 紛らわしい語(綴りが近い・発音が同じ)を、覚えかけの語の直後に新出にしない
   const nearIds = new Set(blocked);
@@ -570,10 +570,12 @@ export function drillCount(words, recs, hidden = {}) {
 }
 
 // ctx.drill: { drilled: { id: 1 }(この利用で出した語), missed: { id: { at: 枚数, n: 回数 } }(思い出せなかった語) }
+// ctx.range があれば、その範囲の語だけ
 function pickDrill(ctx, langs) {
-  const { index, recs, hidden, saved, learners, now, card, rng, drill } = ctx;
+  const { index, recs, hidden, saved, learners, now, card, rng, drill, range, wordsOnly } = ctx;
   const blocked = new Set([...ctx.recent.slice(-RECENT_LIMIT), ...ctx.queued]);
-  const inScope = (w) => w && langs.includes(w.lang) && !hidden[w.id] && !blocked.has(w.id);
+  const inScope = (w) => w && !hidden[w.id] && !blocked.has(w.id)
+    && (range ? range.ids.has(w.id) : langs.includes(w.lang) && (!wordsOnly || w.kind === 'word'));
   // この利用で思い出せなかった語を、間を空けてもう一度(古いものから)
   const again = Object.entries(drill.missed)
     .filter(([id, m]) => card - m.at >= DRILL_AGAIN_GAP && inScope(index.byId.get(id)))
@@ -605,9 +607,11 @@ function fallback(ctx, lang) {
   return { word, why: 'fallback' };
 }
 
-// ctx: { index, recs, saved, hidden, learners, now, card, recent, checked, queued, sessionCount, scope, range, drill, habit, flow, rng }
+// ctx: { index, recs, saved, hidden, learners, now, card, recent, checked, queued, sessionCount, scope, wordsOnly, range, drill, habit, flow, rng }
 // range: { lang, ids: Set } のとき、その範囲の語だけを出す
-// drill: 復習モードのとき、この利用での記録(pickDrill)。出せる語がなくなったら、ふだんどおり選んで drillDone を付ける
+// drill: 復習モードのとき、この利用での記録(pickDrill)。range と一緒なら範囲の中だけで復習する。
+//   出せる語がなくなったら、ふだんどおり(範囲があれば範囲の中で)選んで drillDone を付ける
+// wordsOnly: 英熟語を出さない(範囲を決めているときは範囲の語をそのまま出す)
 export function pickNext(ctx) {
   const rng = ctx.rng || Math.random;
   const frontiers = ctx.frontiers || {};
@@ -620,7 +624,7 @@ export function pickNext(ctx) {
   }
   if (ctx.range) {
     const { lang, ids } = ctx.range;
-    const base = { ...ctx, rng, frontiers, frontierOf: (l) => frontiers[l], only: ids, L: ctx.learners[lang] };
+    const base = { ...ctx, rng, frontiers, frontierOf: (l) => frontiers[l], only: ids, wordsOnly: false, L: ctx.learners[lang] };
     const picked = pickRange(base, lang) || fallback(base, lang);
     if (picked) return picked;
     const any = [...ids].map((id) => ctx.index.byId.get(id)).filter((w) => w && !ctx.hidden[w.id]);

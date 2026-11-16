@@ -1,6 +1,7 @@
 {
   "en": {
     "words": "en-words.jsonl",
+    "leap": "leap-words.jsonl",
     "phrases": "en-phrases.jsonl"
   },
   "kb": {

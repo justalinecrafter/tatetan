@@ -8,8 +8,11 @@ const OLD_KEYS = ['tatetan.v2', 'tatetan.v1'];
 
 export const DEFAULT_SETTINGS = {
   scope: 'en', // en | kb | both
-  range: null, // 範囲を決めて出題するとき { list: 'en-w' | 'en-p' | 'kb', start: 0, 100, … }。null ならおまかせ
-  review: false, // 復習モード(暗記済み・知ってそうの語だけを、定着に効く順に)。範囲とは同時に使わない
+  enList: 'own', // 英単語のリスト: own(縦単オリジナル 3000 語)| leap(LEAP 2300 語)
+  phrases: true, // 英熟語も出す(false なら英単語だけ)
+  range: null, // おまかせで範囲を決めて出題するとき { list: 'en-w' | 'en-p' | 'kb', start: 0, 100, … }。null なら全体
+  review: false, // 復習モード(暗記済み・知ってそうの語だけを、定着に効く順に)
+  reviewRange: null, // 復習モードの範囲(おまかせの範囲とは別に持つ)。null なら全体
   reverse: false, // true: 日本語 → 英語
   tts: true,
   ttsExample: true,
@@ -56,10 +59,12 @@ function normalize(data) {
     lists: normalizeLists(data),
   };
   syncSaved(st);
-  const r = st.settings.range;
-  if (r && (typeof r !== 'object' || typeof r.list !== 'string' || !Number.isInteger(r.start) || r.start < 0)) st.settings.range = null;
-  st.settings.review = st.settings.review === true;
-  if (st.settings.review) st.settings.range = null;
+  const set = st.settings;
+  const badRange = (r) => r && (typeof r !== 'object' || typeof r.list !== 'string' || !Number.isInteger(r.start) || r.start < 0);
+  for (const key of ['range', 'reviewRange']) if (badRange(set[key])) set[key] = null;
+  set.review = set.review === true;
+  set.phrases = set.phrases !== false;
+  if (set.enList !== 'leap') set.enList = 'own';
   if (!(st.openMs >= 0)) st.openMs = 0;
   if (!st.openDays || typeof st.openDays !== 'object' || Array.isArray(st.openDays)) st.openDays = {};
   return st;

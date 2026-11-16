@@ -3,7 +3,7 @@
 //   ses: 1 回の利用のあいだだけ持つ情報 { counts, recent, checked, flow, drill }
 import {
   ST, G, classify, apply, memorize, unmark, dislike, pKnown, farEasy, updateLearner, logBox, logReview, logEasy,
-  pushBaseline, thresholds, newLearner, newTrack, thetaOf, dayKey, isNew, shownState,
+  pushBaseline, thresholds, newLearner, newTrack, thetaOf, dayKey, isNew, shownState, moveTheta,
 } from './srs.js';
 import { pickNext, summarizeHabits, boxStages, frontierOf, frontierKey, DRILL_AGAIN_MAX } from './scheduler.js';
 
@@ -52,8 +52,9 @@ function touchSession(st, now) {
 }
 
 // 次の1枚
-// drill: true なら復習モード(暗記済み・知ってそうの語だけを、定着に効く順に)
-export function next(st, ses, index, { now, queued = [], scope, range = null, drill = false, rng }) {
+// drill: true なら復習モード(暗記済み・知ってそうの語だけを、定着に効く順に)。range と一緒なら範囲の中だけで
+// phrases: false なら英熟語を出さない(範囲を決めているときは範囲の語をそのまま出す)
+export function next(st, ses, index, { now, queued = [], scope, phrases = true, range = null, drill = false, rng }) {
   const cur = st.sessions[st.sessions.length - 1];
   // 開いた直後(まだ1枚も数えていない)も新しい利用として扱う
   const habit = habitsOf(st, now);
@@ -74,6 +75,7 @@ export function next(st, ses, index, { now, queued = [], scope, range = null, dr
     queued,
     sessionCount: ses.counts,
     scope,
+    wordsOnly: !phrases,
     range,
     drill: drill ? drillOf(ses) : null,
     habit,
@@ -229,7 +231,8 @@ export function markDifficult(st, word, { now }) {
 }
 
 /* ---------- 最初のレベル設定 ---------- */
-// 自己申告のレベル → リスト上の開始位置。英単語リストは高校基礎(feed, judge…)から難関(scrutinize…)まで。
+// 自己申告のレベル → リスト上の開始位置(英単語は縦単オリジナルでの位置。LEAP では levelTheta で移す)。
+// 英単語リストは高校基礎(feed, judge…)から難関(scrutinize…)まで。
 // 古典は「やらない(未回答)」なら申告なしとして既定の位置から始める。
 export const LEVELS = {
   en: [
@@ -295,6 +298,30 @@ export function createPlacement(index, lang, { start = null, rng = Math.random }
       step *= 0.8;
     },
   };
+}
+
+/* ---------- 英単語のリスト(縦単オリジナル / LEAP) ----------
+  学習記録は語ごとなので、両方のリストにある語はそのまま引き継ぐ。
+  θ と、位置で数えている確認の手応え(単語の区間)・範囲は、リストの中の位置なので切り替えるときに直す */
+const leapPairs = (leap, toLeap) => leap.filter((w) => w.od != null).map((w) => (toLeap ? [w.od, w.d] : [w.d, w.od]));
+
+// leap: LEAP の単語(位置 d 付き)
+export function switchEnList(st, leap, to) {
+  const set = st.settings;
+  if (set.enList === to) return;
+  const L = learner(st, 'en');
+  moveTheta(L, leapPairs(leap, to === 'leap'));
+  if (L.ez) for (const k of Object.keys(L.ez)) if (k.startsWith('w')) delete L.ez[k];
+  for (const key of ['range', 'reviewRange']) if (set[key]?.list === 'en-w') set[key] = null;
+  set.enList = to;
+}
+
+// 申告したレベルの位置(縦単オリジナルでの位置)を、読み込んでいる英単語リストの位置へ
+export function levelTheta(index, theta) {
+  if (theta == null || index.enList !== 'leap') return theta;
+  const T = newTrack(theta);
+  moveTheta(T, leapPairs(index.ordered('en'), true));
+  return T.theta;
 }
 
 // テストの結果を記録にする。θ はテスト 75% + 申告 25%(0.2 以上食い違うときはテストだけを信じる)。

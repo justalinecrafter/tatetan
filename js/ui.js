@@ -5,7 +5,8 @@ import { markExample, videoCredit } from './feed.js';
 import { drillCount } from './scheduler.js';
 import { todayKey } from './store.js';
 import { DEVICE } from './device.js';
-import { RANGE_SIZE, RANGE_LISTS, rangeList, rangeSource, rangeLabel } from './words.js';
+import { RANGE_SIZE, RANGE_LISTS, EN_LISTS, rangeList, rangeSource, rangeLabel, modeRange, drillPool, leapWords } from './words.js';
+import { switchEnList } from './engine.js';
 import { PWA_ON, storageUsage, clearMedia } from './pwa.js';
 import { DEFAULT_LIST, LIST_NAME_MAX, listById, inList, addTo, removeFrom, createList, renameList, deleteList, listWords } from './lists.js';
 
@@ -800,8 +801,10 @@ export function createUI(app) {
     page.innerHTML = `${pageHead('設定')}
       <div class="page-in settings">
         <h3>出題</h3>
-        <button class="set set-btn" id="setRange"><span>出題モード<small>${s.review ? '復習モード(暗記済み・知ってそうの語を定着させる)' : s.range ? `${esc(rangeLabel(index, s.range))}だけから出題中` : 'おまかせ(実力に合わせて全体から)'}</small></span>${icon(s.review ? 'replay' : 'list', 20)}</button>
-        ${s.range ? '' : select('setScope', '出題する単語', s.scope, [['en', '英単語のみ'], ['kb', '古典単語のみ'], ['both', '両方']])}
+        ${select('setEnList', '英単語のリスト', s.enList, EN_LISTS.map((l) => [l.id, l.label]))}
+        <button class="set set-btn" id="setRange"><span>出題モード<small>${esc(modeText(s, true))}</small></span>${icon(s.review ? 'replay' : 'list', 20)}</button>
+        ${modeRange(s) ? '' : select('setScope', '出題する単語', s.scope, [['en', '英単語のみ'], ['kb', '古典単語のみ'], ['both', '両方']])}
+        ${modeRange(s) ? '' : toggle('setPhrases', '英熟語も出す', s.phrases, 'オフにすると英単語だけを出します')}
         ${select('setDir', '英単語の出題順', s.reverse ? 'rev' : 'std', [['std', '英語 → 日本語'], ['rev', '日本語 → 英語']])}
         <button class="set set-btn" id="setTest"><span>実力テストを受け直す<small>簡単な単語から流す基準を測り直します</small></span>${icon('quiz', 20)}</button>
         <h3>音</h3>
@@ -830,7 +833,9 @@ export function createUI(app) {
     });
     const restartLater = () => { app.pendingRestart = true; };
 
-    if (!s.range) change('setScope', (t) => { s.scope = t.value; restartLater(); });
+    $('setEnList').addEventListener('change', (e) => changeEnList(e.target));
+    if ($('setScope')) change('setScope', (t) => { s.scope = t.value; restartLater(); });
+    if ($('setPhrases')) change('setPhrases', (t) => { s.phrases = t.checked; restartLater(); });
     $('setRange').addEventListener('click', () => openPage('range'));
     change('setDir', (t) => { s.reverse = t.value === 'rev'; restartLater(); });
     change('setTts', (t) => { s.tts = t.checked; });
@@ -870,6 +875,26 @@ export function createUI(app) {
     });
   }
 
+  // 英単語のリストを切り替える。θ を新しいリストの位置へ移してから読み込み直す
+  async function changeEnList(sel) {
+    const to = sel.value;
+    const { label } = EN_LISTS.find((l) => l.id === to);
+    if (!confirm(`英単語のリストを「${label}」に切り替えて、アプリを読み込み直します。両方のリストにある語の学習記録はそのまま引き継ぎます。`)) {
+      sel.value = S().settings.enList;
+      return;
+    }
+    sel.disabled = true;
+    try {
+      switchEnList(S(), await leapWords(index), to);
+      store.flush();
+      location.reload();
+    } catch (err) {
+      sel.disabled = false;
+      sel.value = S().settings.enList;
+      snack(`切り替えられませんでした: ${err.message}`);
+    }
+  }
+
   function renderCredits() {
     const pixabay = manifest.videos.filter((v) => !v.credit);
     const videos = pixabay
@@ -899,39 +924,53 @@ export function createUI(app) {
         <ul class="credit-list">${videos}</ul>
         <h3>単語データ</h3>
         <p>英単語・英熟語のリスト、意味・例文はこのアプリのために作成しました。古典の用例は、著作権の切れた古典作品の原文と自作の例文(作例と表示)です。現代語訳は自作です。</p>
+        <p>英単語のリストで LEAP を選んだときは、語の並びを『必携英単語 LEAP』(数研出版)に合わせています(個人で使うため)。意味・例文は縦単オリジナルと同じもので、縦単にない語は独自に作成しました。</p>
       </div>`;
   }
 
-  /* ---------- 出題範囲 ---------- */
-  // 各リストを易しい順に 100 語ずつ。覚えた語(暗記済み・知ってそう)の割合を棒で見せる
-  // 出題モードの表示名
-  const modeText = (set) => (set.review ? '復習モード' : set.range ? rangeLabel(index, set.range) : 'おまかせ');
-  const inScope = (w) => S().settings.scope === 'both' || w.lang === S().settings.scope;
+  /* ---------- 出題モード ----------
+    おまかせ・復習モードのどちらかに、範囲(全体 / 100 語ずつ)を組み合わせる。範囲はモードごとに別々に持つ */
+  // 出題モードの表示名。long: 設定の画面用(説明つき)
+  const modeText = (set, long = false) => {
+    const r = modeRange(set);
+    const where = r ? rangeLabel(index, r) : '';
+    if (set.review) return `復習モード${where ? `(${where})` : long ? '(全体)' : ''}`;
+    if (where) return long ? `${where}だけから出題中` : where;
+    return long ? 'おまかせ(実力に合わせて全体から)' : 'おまかせ';
+  };
+  // 復習モードで出せる語の数(範囲を決めていればその範囲で)
+  const drillable = (range) => drillCount(drillPool(index, S().settings, range), S().recs, S().hidden);
 
-  // 出題モードを切り替える(おまかせ / 復習モード / 範囲)。ページを開いているなら、閉じたときに流し直す
-  function setMode({ review = false, range = null }) {
+  // 出題モードを切り替える。review を省くといまのモードのまま、range を省くとそのモードで選んでいた範囲
+  // (復習モードに切り替えたとき、その範囲に復習できる語がもうなければ全体)。ページを開いているなら、閉じたときに流し直す
+  function setMode({ review = S().settings.review, range }) {
     const set = S().settings;
-    if (review && !drillCount(index.words.filter(inScope), S().recs, S().hidden)) {
-      snack('復習できる語(暗記済み・知ってそう)がまだありません');
+    const key = review ? 'reviewRange' : 'range';
+    let next = range === undefined ? set[key] : range;
+    if (review && range === undefined && next && !drillable(next)) next = null;
+    if (review && !drillable(next)) {
+      snack(`${next ? 'この範囲には' : ''}復習できる語(暗記済み・知ってそう)がまだありません`);
       return false;
     }
     set.review = review;
-    set.range = review ? null : range;
+    set[key] = next;
     store.save();
-    snack(review ? '復習モードにしました。忘れかけ・難しい語から出します' : set.range ? `${rangeLabel(index, set.range)} から出題します` : 'おまかせの出題に戻しました');
+    const where = next ? rangeLabel(index, next) : '';
+    snack(review ? `復習モード${where ? `(${where})` : ''}にしました。忘れかけ・難しい語から出します` : where ? `${where} から出題します` : 'おまかせの出題に戻しました');
     if (currentPage) app.pendingRestart = true;
     else app.feed.start();
     return true;
   }
 
   // 出題モードのページ。YouTube の再生リストの並びに寄せる:
-  // 上におまかせ・復習モード、下に範囲(チップで英単語・英熟語・古典単語を切り替え、100語ずつを再生リストのように並べる)
+  // 上におまかせ・復習モード、下にそのモードの範囲(全体と、チップで英単語・英熟語・古典単語を切り替えて 100 語ずつ)
   let rangeTab = null;
   function renderRange() {
     const st = S();
     const set = st.settings;
-    const cur = set.review ? null : set.range;
-    const nDrill = drillCount(index.words.filter(inScope), st.recs, st.hidden);
+    const review = !!set.review;
+    const cur = modeRange(set);
+    const nDrill = drillable(null);
     const lists = RANGE_LISTS.filter((l) => rangeSource(index, l).length);
     if (!lists.some((l) => l.id === rangeTab)) rangeTab = cur?.list || lists[0]?.id;
     const playing = `<span class="yt-over">${icon('bars', 20)}再生中</span>`;
@@ -943,10 +982,12 @@ export function createUI(app) {
       </button>`;
     const modeThumb = (cls, ic, on) => `<span class="lthumb ${cls}${on ? ' playing' : ''}">${icon(ic, 32)}${on ? playing : ''}</span>`;
     const modes = [
-      card('data-mode="auto"', modeThumb('av-auto', 'feedFill', !set.review && !cur), 'おまかせ', '実力に合わせて全体から', !set.review && !cur),
-      card('data-mode="review"', modeThumb('av-review', 'replay', set.review), '復習モード',
-        nDrill ? `暗記済み・知ってそう ${nDrill.toLocaleString()}語` : '暗記済み・知ってそうの語がまだありません', set.review, !nDrill),
+      card('data-mode="auto"', modeThumb('av-auto', 'feedFill', !review), 'おまかせ', '実力に合わせて、新しい語と復習を混ぜる', !review),
+      card('data-mode="review"', modeThumb('av-review', 'replay', review), '復習モード',
+        nDrill ? `暗記済み・知ってそう ${nDrill.toLocaleString()}語を定着させる` : '暗記済み・知ってそうの語がまだありません', review, !nDrill),
     ].join('');
+    const allCard = card('data-all="1"', modeThumb(review ? 'av-review' : 'av-auto', 'list', !cur), '全体',
+      review ? `復習できる ${nDrill.toLocaleString()}語` : 'リスト全体から', !cur);
 
     const rangeCard = (list, start, ws) => {
       let done = 0;
@@ -961,8 +1002,12 @@ export function createUI(app) {
       const prog = done ? `<span class="yt-prog"><i style="width:${Math.round((done / ws.length) * 100)}%"></i></span>` : '';
       const count = full ? `${icon('check', 14)}覚えきった` : `${ws.length}語`;
       const thumb = `<span class="lthumb ${THUMB(ws[0])[1]}${prog ? ' has-prog' : ''}${on ? ' playing' : ''}"><b>${esc(ws[0].w)}</b><span class="lcount">${count}</span>${on ? playing : ''}${prog}</span>`;
-      const meta = done || learning ? `覚えた ${done}語${learning ? ` ・ 学習中 ${learning}語` : ''}` : 'まだ始めていません';
-      return card(`data-list="${list.id}" data-start="${start}"`, thumb, `${esc(list.label)} ${start + 1}〜${start + ws.length}`, meta, on);
+      // 復習モードでは、その範囲で復習できる語(暗記済み・知ってそう)がなければ選べない
+      const nRange = review ? drillable({ list: list.id, start }) : 0;
+      const meta = review
+        ? (nRange ? `復習できる ${nRange}語` : 'まだ復習できる語がありません')
+        : done || learning ? `覚えた ${done}語${learning ? ` ・ 学習中 ${learning}語` : ''}` : 'まだ始めていません';
+      return card(`data-list="${list.id}" data-start="${start}"`, thumb, `${esc(list.label)} ${start + 1}〜${start + ws.length}`, meta, on, review && !nRange);
     };
     const rangeCards = () => {
       const list = rangeList(rangeTab);
@@ -977,7 +1022,8 @@ export function createUI(app) {
     page.innerHTML = `${pageHead('出題モード')}
       <div class="page-in range">
         <div class="llist">${modes}</div>
-        <h2 class="yt-sec">範囲<small>100語ずつ・易しい順</small></h2>
+        <h2 class="yt-sec">${review ? '復習する範囲' : '範囲'}<small>100語ずつ・易しい順</small></h2>
+        <div class="llist">${allCard}</div>
         <div class="chips rg-chips">${chips()}</div>
         <div class="llist" id="rgList">${rangeCards()}</div>
       </div>`;
@@ -1001,9 +1047,14 @@ export function createUI(app) {
       const c = e.target.closest('.rg-card');
       if (!c || c.disabled) return;
       if (c.dataset.mode) {
-        const review = c.dataset.mode === 'review';
-        if (review === !!set.review && !cur) closePage();
-        else apply({ review });
+        const next = c.dataset.mode === 'review';
+        if (next === review) closePage();
+        else apply({ review: next });
+        return;
+      }
+      if (c.dataset.all) {
+        if (!cur) closePage();
+        else apply({ range: null });
         return;
       }
       const range = { list: c.dataset.list, start: Number(c.dataset.start) };
@@ -1294,7 +1345,7 @@ export function createUI(app) {
         return;
       }
       const go = e.target.closest('[data-range-start]');
-      if (go && setMode({ range: { list: masteryTab, start: Number(go.dataset.rangeStart) } })) closePage();
+      if (go && setMode({ review: false, range: { list: masteryTab, start: Number(go.dataset.rangeStart) } })) closePage();
     });
     draw();
   }

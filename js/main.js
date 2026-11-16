@@ -125,7 +125,7 @@ async function boot() {
   const splash = document.getElementById('splash');
   const store = createStore();
   const [index, manifest, voices] = await Promise.all([
-    loadWords(),
+    loadWords(store.state.settings.enList),
     fetch('data/media.json').then((r) => {
       if (!r.ok) throw new Error('素材の一覧を読み込めませんでした');
       return r.json();

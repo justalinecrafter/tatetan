@@ -8,7 +8,7 @@ import { newSession, next as pickNextCard, commit, advance, stepBack, markDiffic
 import { Shuffler } from './media.js';
 import { DEVICE, debugLog } from './device.js';
 import { fitAll } from './fit.js';
-import { rangeWords, rangeList, rangeLabel } from './words.js';
+import { rangeWords, rangeList, rangeLabel, modeRange, drillPool } from './words.js';
 import { drillCount } from './scheduler.js';
 
 const VIDEO_POOL = 4;
@@ -270,20 +270,17 @@ export function createFeed(app) {
   // 上部の出題モードの札(おまかせのときは出さない)。押すと出題モードのページへ
   function modeChip() {
     const s = settings();
-    let label = '';
-    let ic = 'list';
-    if (s.review) {
-      label = '復習モード';
-      ic = 'replay';
-    } else if (currentRange()) label = rangeLabel(index, s.range);
+    const where = currentRange() ? rangeLabel(index, modeRange(s)) : '';
+    const label = s.review ? `復習モード${where ? ` ・ ${where}` : ''}` : where;
+    const ic = s.review ? 'replay' : 'list';
     if (!label) return '';
     return `<button class="pchip" data-act="range" aria-label="出題モードを変える">${icon(ic, 16)}<span>${esc(label)}</span></button><span class="grow"></span>`;
   }
 
-  // 範囲を決めて出題しているときの範囲({ lang, ids })。設定が変わったら作り直す
+  // 範囲を決めて出題しているときの範囲({ lang, ids })。いまの出題モード(おまかせ・復習)の範囲。設定が変わったら作り直す
   let rangeCache = { key: null, value: null };
   function currentRange() {
-    const r = settings().range;
+    const r = modeRange(settings());
     const key = r ? `${r.list}:${r.start}` : null;
     if (key !== rangeCache.key) {
       const ws = rangeWords(index, r);
@@ -292,10 +289,10 @@ export function createFeed(app) {
     return rangeCache.value;
   }
 
-  // 範囲の語をすべて覚えたら(暗記済み・知ってそう)、一度だけ次の範囲を案内する
+  // おまかせで範囲の語をすべて覚えたら(暗記済み・知ってそう)、一度だけ次の範囲を案内する
   function noticeRangeDone() {
     const r = settings().range;
-    if (!r || ses.rangeDone === `${r.list}:${r.start}`) return;
+    if (settings().review || !r || ses.rangeDone === `${r.list}:${r.start}`) return;
     const ws = rangeWords(index, r);
     if (!ws || ws.some((w) => { const s = shownState(S().recs[w.id]); return s !== ST.MASTERED && s !== ST.LIKELY; })) return;
     ses.rangeDone = `${r.list}:${r.start}`;
@@ -316,7 +313,7 @@ export function createFeed(app) {
   function noticeDrillDone(picked) {
     if (!picked.drillDone || ses.drillDone) return;
     ses.drillDone = true;
-    const none = !drillCount(index.words.filter((w) => scopeHas(w)), S().recs, S().hidden);
+    const none = !drillCount(drillPool(index, settings()), S().recs, S().hidden);
     app.ui.snack(none ? '復習できる語(暗記済み・知ってそう)がまだありません' : '復習する語をひととおり出しました。続きはふだんの出題です', {
       label: 'おまかせに戻す',
       run: () => {
@@ -326,7 +323,6 @@ export function createFeed(app) {
       },
     });
   }
-  const scopeHas = (w) => settings().scope === 'both' || w.lang === settings().scope;
 
   function ensureItems() {
     while (items.length < active + RENDER_AHEAD + 2) {
@@ -339,7 +335,8 @@ export function createFeed(app) {
         now: Date.now(),
         queued: items.slice(Math.max(0, active + 1)).map((it) => it.word.id),
         scope: settings().scope,
-        range: settings().review ? null : currentRange(),
+        phrases: settings().phrases,
+        range: currentRange(),
         drill: !!settings().review,
       });
       if (!picked) break;

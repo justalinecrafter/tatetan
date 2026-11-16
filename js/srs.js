@@ -111,6 +111,22 @@ export function updateLearner(L, word, y, weight) {
   }
 }
 
+// 英単語のリストを切り替えたとき、θ を新しいリストの位置へ移す。
+// 両方のリストにある語(pairs: [前のリストでの位置, 新しいリストでの位置])で、知っている見込みの語数がそろう位置を探す
+export function moveTheta(T, pairs) {
+  if (!pairs.length) return;
+  const known = (theta, k) => pairs.reduce((a, p) => a + 1 / (1 + Math.exp(-(theta - p[k]) / T.w)), 0);
+  const goal = known(T.theta, 0);
+  let lo = -0.05;
+  let hi = 1.05;
+  for (let i = 0; i < 30; i++) {
+    const mid = (lo + hi) / 2;
+    if (known(mid, 1) < goal) lo = mid;
+    else hi = mid;
+  }
+  T.theta = (lo + hi) / 2;
+}
+
 // 学習枠の復習の成否から、枠の大きさを調整する
 export function logBox(L, success) {
   L.boxLog.push(success ? 1 : 0);

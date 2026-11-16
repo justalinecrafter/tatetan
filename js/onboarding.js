@@ -1,6 +1,6 @@
 // 初回のレベル設定。英語・古典のレベルを自己申告してもらい、英語はそのあと実力テストで確かめる。
 // 結果は内部の実力 θ(単語リスト上の位置)としてだけ使い、画面にはレベルを出さない。
-import { createPlacement, applyPlacement, applyLevels, LEVELS, TEST_QUESTIONS } from './engine.js';
+import { createPlacement, applyPlacement, applyLevels, levelTheta, LEVELS, TEST_QUESTIONS } from './engine.js';
 import { icon, logo } from './icons.js';
 import { fitAll } from './fit.js';
 
@@ -79,7 +79,7 @@ export function createOnboarding(app) {
     const lang = 'en';
     const pool = index.ordered(lang);
     const self = LEVELS.en.find((x) => x.id === store.state.levels?.en);
-    const placement = createPlacement(index, lang, { start: self ? self.theta : null });
+    const placement = createPlacement(index, lang, { start: self ? levelTheta(index, self.theta) : null });
 
     const render = () => {
       const w = placement.done ? null : placement.question();
