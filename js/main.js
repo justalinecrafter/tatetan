@@ -138,6 +138,11 @@ async function boot() {
   app.tickOpenTime = trackOpenTime(store);
   app.bgm = new Bgm(manifest, () => store.state.settings);
   app.tts = new Tts((busy) => app.bgm.duck(busy), app.bgm);
+  // 裏に回ったら、どの画面でも音を止める(フィードを始める前の実力テストでも BGM は鳴るため)
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) app.tts.cancel();
+    app.bgm.setAway(document.hidden);
+  });
   app.tts.setFiles(voices);
 
   // 必ずユーザー操作のイベントの中から呼ぶ。読み上げと BGM は別々に許可を取る

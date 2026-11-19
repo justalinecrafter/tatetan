@@ -46,7 +46,9 @@ export class Bgm {
     this.cur = 0;
     this.want = null;
     this.ducked = false;
-    this.suspended = false;
+    this.suspended = false; // フィードが止まっている(ページを開いた・一時停止)
+    this.away = false; // アプリが裏に回っている
+    this.parked = null; // 裏に回ったときの曲と再生位置(戻ったら続きから)
     this.unlocked = false;
     this.timer = null;
     this.ctx = null;
@@ -60,6 +62,8 @@ export class Bgm {
     const ch = { el, track: null, gain: null, errors: 0 };
     el.addEventListener('ended', () => this.handleEnded(ch));
     el.addEventListener('playing', () => { ch.errors = 0; });
+    // 裏に回っている間にロック画面やイヤホンから鳴らされたら、すぐ止める
+    el.addEventListener('play', () => { if (this.away) el.pause(); });
     // 読み込めない曲(電波が無いなど)は、保存済みの曲に替える
     el.addEventListener('error', () => {
       if (!ch.track || ch !== this.channels[this.cur] || ++ch.errors > 3) return;
@@ -72,7 +76,7 @@ export class Bgm {
   }
 
   handleEnded(ch) {
-    if (ch !== this.channels[this.cur]) return;
+    if (ch !== this.channels[this.cur] || this.quiet()) return;
     if (this.getSettings().bgmMode === 'continuous') {
       this.play(this.shuffler.next());
       this.onTrackChange?.(this.want);
@@ -98,6 +102,11 @@ export class Bgm {
     }
   }
 
+  // 鳴らさないとき: フィードが止まっている・裏に回っている・BGM がオフ
+  quiet() {
+    return this.suspended || this.away || !this.getSettings().bgm;
+  }
+
   level() {
     const s = this.getSettings();
     if (s.muted || !s.bgm) return 0;
@@ -117,7 +126,7 @@ export class Bgm {
     this.setLevel(cur, this.level());
     this.setLevel(this.channels[1 - this.cur], 0);
     if (!this.getSettings().bgm) cur.el.pause();
-    else if (this.unlocked && !this.suspended && cur.track) cur.el.play().catch(() => {});
+    else if (this.unlocked && !this.quiet() && cur.track) cur.el.play().catch(() => {});
   }
 
   duck(on) {
@@ -155,7 +164,7 @@ export class Bgm {
     if (this.want) this.load(cur, this.want);
     else if (!cur.track) this.load(cur, this.shuffler.next());
     if (!other.track) this.load(other, this.shuffler.next());
-    const silent = this.suspended || !this.getSettings().bgm;
+    const silent = this.quiet();
     // iOS は操作の中で 1 回でも再生した要素だけ、後から自動で鳴らせる。両方とも今ここで再生しておく
     other.el.muted = true;
     if (silent) cur.el.muted = true;
@@ -171,7 +180,7 @@ export class Bgm {
           return e?.name !== 'NotAllowedError';
         }
       ).finally(() => {
-        if (ch !== this.channels[this.cur] || this.suspended || !this.getSettings().bgm) ch.el.pause();
+        if (ch !== this.channels[this.cur] || this.quiet()) ch.el.pause();
         ch.el.muted = false;
       });
     this.unlocking = Promise.all([settle(cur, blessCur), settle(other, blessOther)]).then(([ok]) => {
@@ -184,7 +193,7 @@ export class Bgm {
 
   // iOS は裏に回ったり電話が来たりすると AudioContext が止まる。操作のたびに起こす
   wake() {
-    if (this.ctx && this.ctx.state !== 'running') this.ctx.resume().catch(() => {});
+    if (this.ctx && !this.away && this.ctx.state !== 'running') this.ctx.resume().catch(() => {});
   }
 
   play(track) {
@@ -196,7 +205,7 @@ export class Bgm {
   }
 
   commit() {
-    if (!this.unlocked || this.suspended || !this.getSettings().bgm) return;
+    if (!this.unlocked || this.quiet()) return;
     const cur = this.channels[this.cur];
     if (cur.track === this.want) {
       if (cur.el.paused) cur.el.play().catch(() => {});
@@ -237,6 +246,35 @@ export class Bgm {
     if (!this.unlocked) return;
     this.wake();
     if (this.want) this.commit();
+  }
+
+  // アプリが裏に回ったら(どの画面でも)曲を外し、AudioContext も止める。
+  // iOS はロック画面に再生ボタンを残すので、そこやイヤホンから鳴らされると裏で流れ続けてしまう。
+  // 戻ったら、外した曲を続きから鳴らす
+  setAway(away) {
+    if (away === this.away) return;
+    this.away = away;
+    const cur = this.channels[this.cur];
+    if (away) {
+      clearTimeout(this.timer);
+      this.parked = cur.track ? { track: cur.track, at: cur.el.currentTime } : null;
+      for (const ch of this.channels) {
+        ch.el.pause();
+        ch.track = null;
+        ch.el.removeAttribute('src');
+        ch.el.load();
+      }
+      if (this.ctx) this.ctx.suspend().catch(() => {});
+      return;
+    }
+    if (this.parked) {
+      const { track, at } = this.parked;
+      this.parked = null;
+      this.load(cur, track);
+      cur.el.addEventListener('loadedmetadata', () => { cur.el.currentTime = at; }, { once: true });
+    }
+    this.wake();
+    this.refreshLevel();
   }
 }
 
