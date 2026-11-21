@@ -391,7 +391,7 @@ export function createFeed(app) {
       <div class="t-ex">${markExample(ex)}${ex.src ? `<span class="t-src">(${esc(ex.src)})</span>` : ''}</div>
       <div class="t-exja">${esc(ex.ja)}</div>
       ${pairsLine('t-line', '≒', w.syn)}
-      ${w.phr && w.phr.length ? pairsLine('t-line', '句', w.phr.slice(0, 1)) : ''}
+      ${w.phr && w.phr.length ? pairsLine('t-line', '句', w.phr.slice(0, w.lang === 'en' ? 2 : 1)) : ''}
       ${w.tip ? `<div class="t-tip">${esc(w.tip)}</div>` : ''}`;
   }
 

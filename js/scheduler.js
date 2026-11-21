@@ -11,6 +11,8 @@ const RECENT_LIMIT = 6; // 同じ語を続けない
 const SESSION_CAP = 4; // 1 回の利用で同じ語を流す上限
 const CONFUSE_GAP = 30; // 紛らわしい語は、この枚数以内に続けて新出にしない
 const AHEAD_MIN_CARDS = 12; // 期限前に出すときも、直前に見た語は避ける
+const RANGE_REST_GAP = 8; // 範囲モードでまだ覚えていない語は、この枚数空けば前倒しで出せる
+const RANGE_REST = 0.85; // 範囲モードの前倒しで、まだ覚えていない語を選ぶ割合
 const CHECK_MIN_GAP = DAY / 2;
 const FORCE_OVERDUE = 10; // 学習枠の出番をこの枚数過ぎたら必ず出す
 
@@ -90,6 +92,9 @@ export function summarizeHabits(days, sessions, now) {
 
 // 学習枠の段の数。2〜3日おきに使う人は、卒業前にもう1段確かめる
 export const boxStages = (habit) => (habit && habit.gapDays >= 2 ? 4 : 3);
+
+// 覚えた語(暗記済み・知ってそう)。範囲の「覚えた」の数え方と同じ
+const learned = (rec) => rec?.st === ST.MASTERED || rec?.st === ST.LIKELY;
 
 const skipWeight = (w, recs) => Math.pow(0.5, recs[w.id]?.skip || 0);
 
@@ -196,7 +201,7 @@ function collect(ctx, lang) {
     }
     if (isDue(rec, now, card)) g.review.push(w);
     // 暗記ボタンを押した語・知ってそうと推定した語は、決めた日の確認まで前倒しで出さない
-    else if (card - (rec.lastCard ?? -Infinity) >= AHEAD_MIN_CARDS && !rec.mkc && !rec.lkc) g.ahead.push(w);
+    else if (card - (rec.lastCard ?? -Infinity) >= (ctx.only && !learned(rec) ? RANGE_REST_GAP : AHEAD_MIN_CARDS) && !rec.mkc && !rec.lkc) g.ahead.push(w);
   };
   for (const w of index.ordered(lang)) scan(w);
   if (!ctx.wordsOnly) for (const w of index.phrases(lang)) scan(w);
@@ -527,6 +532,9 @@ function pickRange(ctx, lang) {
   if (fresh.length && g.boxCount < ctx.L.box + 2) return pickNew();
   if (g.boxDue.length) return { word: pickBoxDue(g.boxDue, ctx), why: 'box' };
   if (g.review.length) return { word: pickReview(g.review, ctx), why: 'review' };
+  // 前倒しは、まだ覚えていない語(学習中)を先に。終盤に残った数語が、暗記済みの語の前倒しに埋もれないように
+  const rest = g.ahead.filter((w) => !learned(recs[w.id]));
+  if (rest.length && rng() < RANGE_REST) return { word: pickAhead(rest, ctx), why: 'ahead' };
   if (g.ahead.length || g.box.length) return { word: pickAhead(g.ahead.length ? g.ahead : g.box, ctx), why: 'ahead' };
   if (fresh.length) return pickNew();
   if (g.check.length) return { word: pickCheck(g.check, ctx), why: 'check' };

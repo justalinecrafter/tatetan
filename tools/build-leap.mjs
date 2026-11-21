@@ -56,9 +56,11 @@ const lines = order.map((w) => {
 });
 if (missing.length) throw new Error(`意味・例文がない語があります(tools/leap-extra.jsonl に足してください): ${missing.join(', ')}`);
 
-// 例文には見出し語の印 {…} が要る(答えの面で強調する)
+// 例文には見出し語の印 {…} が要る(答えの面で強調する)。
+// 訳は日本語だけ(日本語→英語の出題で答えが見えないように。語法は phr: [[英語, 訳], …] に書く)
 for (const x of lines) {
   if (!x.m?.length || x.ex?.length !== 2 || x.ex.some((e) => !/\{[^}]+\}/.test(e.t) || !e.ja)) throw new Error(`形式が正しくありません: ${x.w}`);
+  if (x.m.some((m) => /[A-Za-z]{2,}/.test(m))) throw new Error(`訳に英語が入っています(phr へ): ${x.w}`);
 }
 writeFileSync(out, `${lines.map((x) => JSON.stringify(x)).join('\n')}\n`);
 console.log(`${lines.length} 語 → data/words/leap-words.jsonl(縦単 ${counts.own}・熟語 ${counts.phrase}・独自 ${counts.extra})`);
